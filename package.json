@@ -1,0 +1,15 @@
+{
+  "name": "ordinatura",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Офлайн-расписание ординатуры: календарь, циклы, преподаватели и площадки",
+  "scripts": {
+    "start": "sh scripts/start.sh",
+    "parse": "python3 scripts/parse_schedule.py data/schedule.xlsx data",
+    "test": "node scripts/smoke-test.js",
+    "build": "node -e \"console.log('static PWA — no build step')\""
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
