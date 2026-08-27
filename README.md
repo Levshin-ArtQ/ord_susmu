@@ -10,25 +10,23 @@
 - Время, место, контакты преподавателя — только на устройстве
 - Таблица **сама не подтягивается**. Обновление — только кнопка «Обновить из таблицы» или файл xlsx
 
-## Деплой
+## Деплой на Vercel через GitHub
 
-Каталог `ordinatura/` можно выложить как статику.
+Репозиторий: [Levshin-ArtQ/ord_susmu](https://github.com/Levshin-ArtQ/ord_susmu). Это **статика** (HTML/JS), не Next.js.
 
-**Vercel** (из этой папки):
+1. [vercel.com/new](https://vercel.com/new)
+2. Import **`Levshin-ArtQ/ord_susmu`** (если репозитория нет в списке: Configure GitHub App → разрешите этот repo)
+3. **Framework Preset: Other**
+4. **Root Directory:** не меняйте (файлы лежат в корне репозитория)
+5. Build Command и Output Directory оставьте пустыми — их задаёт `vercel.json`
+6. Deploy
 
-```bash
-cd ordinatura
-npx vercel
-```
-
-Или в проекте на vercel.com укажите Root Directory: `ordinatura`.
-
-После публикации ординаторы открывают ссылку в Safari / Chrome и добавляют на экран Домой.
+После деплоя: открыть `https://….vercel.app` в Safari → Поделиться → На экран «Домой».
 
 Локально:
 
 ```bash
-python3 -m http.server 8767 --bind 0.0.0.0
+npm run dev
 ```
 
 ## Данные
