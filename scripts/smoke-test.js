@@ -95,6 +95,8 @@ ok(S.expandName("Кл фармакология").includes("Клиническа�
 ok(S.shortName("Кл фармакология") === "Кл фарм", "short name pharm");
 ok(S.shortName("Педагогика, психология и проф. коммуникации") === "Педагогика", "short pedagogy");
 ok(S.formatTimeSpan("09:00", "15:00") === "с 9:00 до 15:00", "readable time span");
+ok(S.formatDM("2026-09-01") === "01.09", "dm date");
+ok(S.formatDayMon("2026-09-01") === "1 сен", "day mon");
 const slots = S.slotsFor(S.defaultSettings(), { discipline: {} }, { base: "x" }, "2026-09-02");
 ok(slots.length === 2 && slots[0].kind === "practice" && slots[1].kind === "lecture", "default practice then lecture");
 ok(slots[0].start === "09:00" && slots[1].start === "12:30", "default part times");
@@ -114,7 +116,7 @@ const tf = S.timeFor(
 );
 ok(tf.start === "09:00" && tf.end === "15:00", "block dates are not class times, got " + tf.start + "-" + tf.end);
 ok(!S.formatTimeSpan("2026-09-02", "2026-09-05").includes("2026:00"), "no year-as-hour");
-ok(S.kindLabel("specialty") === "Своя дисциплина", "ru labels");
+ok(S.kindLabel("specialty") === "Профильная дисциплина", "ru labels");
 ok(S.monthWeeks(2026, 8).length >= 5, "september weeks");
 
 if (errors.length) {

@@ -42,40 +42,25 @@
     return c.charAt(0) === "#" ? c : "#" + c;
   }
 
-  const PALETTE = [
-    "00FFFF",
-    "FF9900",
-    "FFFF00",
-    "FF00FF",
-    "8E7CC3",
-    "38761D",
-    "EA9999",
-    "F4CCCC",
-    "00FF00",
-    "F6B26B",
-    "FFE599",
-    "D9EAD3",
-    "4A86E8",
-    "E06666",
-    "BF9000",
-    "6AA84F",
-    "C27BA0",
-    "B4A7D6",
-    "0F766E",
-    "0EA5E9",
-    "F97316",
-    "84CC16",
-    "14B8A6",
-    "64748B",
-    "B6D7A8",
-    "FF0000",
-    "D9D9D9",
-    "1C2430",
-    "FFF2CC",
-    "D0E0E3",
-    "CFE2F3",
-    "E6B8AF"
-  ];
+  function hslHex(h, s, l) {
+    s /= 100;
+    l /= 100;
+    const a = s * Math.min(l, 1 - l);
+    const f = (n) => {
+      const k = (n + h / 30) % 12;
+      const c = l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
+      return Math.round(255 * c)
+        .toString(16)
+        .padStart(2, "0");
+    };
+    return (f(0) + f(8) + f(4)).toUpperCase();
+  }
+
+  const PALETTE_HUES = [0, 25, 48, 72, 128, 172, 212, 278];
+  const PALETTE = PALETTE_HUES.map((h) => hslHex(h, 90, 52))
+    .concat(PALETTE_HUES.map((h) => hslHex(h, 68, 70)))
+    .concat(PALETTE_HUES.map((h) => hslHex(h, 38, 86)))
+    .concat(["1C2430", "64748B", "D9D9D9", "D0E0E3", "CFE2F3", "B6D7A8", "FFF2CC", "E6B8AF"]);
 
   function recTitle(rec) {
     if (!rec) return "Нет занятий";
@@ -94,10 +79,14 @@
 
   function paletteHtml(selected, inputId) {
     const cur = String(selected || "").replace("#", "").toUpperCase();
-    const chips = PALETTE.map((p) => {
-      const on = cur === p ? " on" : "";
-      return `<button type="button" class="swatch-btn${on}" data-pal="${p}" style="background:#${p}" aria-label="${p}"></button>`;
-    }).join("");
+    const list = PALETTE.slice();
+    if (cur && /^[0-9A-F]{6}$/.test(cur) && list.indexOf(cur) < 0) list.push(cur);
+    const chips = list
+      .map((p) => {
+        const on = cur === p ? " on" : "";
+        return `<button type="button" class="swatch-btn${on}" data-pal="${p}" style="background:#${p}" aria-label="${p}"></button>`;
+      })
+      .join("");
     return `<div class="palette" data-pal-input="${esc(inputId)}">${chips}</div>
       <input type="hidden" id="${esc(inputId)}" value="${esc(cur)}" />`;
   }
@@ -264,6 +253,15 @@
     await DB.set("schedule", state.schedule);
   }
 
+  function isOffline() {
+    return typeof navigator !== "undefined" && navigator.onLine === false;
+  }
+
+  function offlineBanner() {
+    if (!isOffline()) return "";
+    return `<div class="offline-bar">Нет сети. Работает копия на телефоне.</div>`;
+  }
+
   function myGroupId() {
     return state.settings.groupId;
   }
@@ -379,23 +377,144 @@
     return S.specialities(state.schedule).filter((s) => !q || s.name.toLowerCase().includes(q) || s.groups.some((g) => g.id.includes(q)));
   }
 
+  function groupLine(id) {
+    const g = groupOf(id);
+    if (!g) return id || "не выбрана";
+    return g.id + " · " + g.speciality;
+  }
+
+  function ownGroupWarningHtml(gid, source) {
+    const prev = myGroupId();
+    const nextG = groupOf(gid);
+    const first = !prev;
+    const adopt = source === "adopt";
+    const title = first ? "Моя группа?" : "Сменить группу?";
+    const lead = first
+      ? "Будем показывать расписание этой группы."
+      : adopt
+        ? "Сейчас вы только смотрите эту группу. Сделать её моей?"
+        : "Моё расписание станет как у этой группы.";
+    const fromto = first
+      ? `<div class="warn-now">
+          <div class="k">Группа</div>
+          <div class="t">${esc(nextG ? nextG.id : gid)}</div>
+          <div class="s">${esc(nextG ? nextG.speciality : "")}</div>
+        </div>`
+      : `<div class="warn-fromto">
+          <div>
+            <div class="k">Сейчас</div>
+            <div class="t">${esc(groupLine(prev))}</div>
+          </div>
+          <div class="warn-arrow" aria-hidden="true">→</div>
+          <div>
+            <div class="k">Будет</div>
+            <div class="t">${esc(nextG ? nextG.id : gid)}</div>
+            <div class="s">${esc(nextG ? nextG.speciality : "")}</div>
+          </div>
+        </div>`;
+    const points = first
+      ? [
+          "Это моё расписание на каждый день.",
+          "Другие группы можно просто посмотреть — моя не изменится.",
+          "Поменять группу можно позже во вкладке «Ещё»."
+        ]
+      : [
+          "Поменяется расписание на всех вкладках.",
+          "Другие группы по-прежнему можно просто посмотреть.",
+          "Заметки по старой группе останутся."
+        ];
+    const yes = first ? "Да, это моя" : "Да, сменить";
+    return `
+      <h1>${title}</h1>
+      <p class="sub" style="margin:0 0 12px">${lead}</p>
+      <div class="warn-card">${fromto}</div>
+      <ul class="warn-list">${points.map((p) => `<li>${p}</li>`).join("")}</ul>
+      <div class="btn-row">
+        <button type="button" class="btn" data-own-confirm="no">Отмена</button>
+        <button type="button" class="btn primary" data-own-confirm="yes">${yes}</button>
+      </div>
+    `;
+  }
+
+  function askOwnGroupChange(gid, source) {
+    return new Promise((resolve) => {
+      const html = ownGroupWarningHtml(gid, source);
+      const root = $("#modal-root");
+      const sheet = root && !root.hidden ? $(".sheet", root) : null;
+      const nest = sheet && $(".sheet-nest", sheet);
+      const main = sheet && $(".sheet-main", sheet);
+      let host;
+      let settled = false;
+      const finish = (ok) => {
+        if (settled) return;
+        settled = true;
+        resolve(ok);
+      };
+      if (nest && main) {
+        main.hidden = true;
+        nest.hidden = false;
+        nest.innerHTML = html;
+        host = nest;
+      } else {
+        host = openSheet(html);
+      }
+      const no = $("[data-own-confirm='no']", host);
+      const yes = $("[data-own-confirm='yes']", host);
+      if (no) {
+        no.addEventListener("click", () => {
+          if (nest && host === nest) {
+            nest.hidden = true;
+            nest.innerHTML = "";
+            main.hidden = false;
+          } else {
+            closeModal();
+          }
+          finish(false);
+        });
+      }
+      if (yes) yes.addEventListener("click", () => finish(true));
+    });
+  }
+
+  async function commitOwnGroup(gid) {
+    state.settings.groupId = gid;
+    state.settings.peekId = "";
+    state.settings.seenOnboarding = true;
+    await persist();
+    closeModal();
+    toast("Группа " + gid);
+    render();
+  }
+
   function renderGroupPicker(opts) {
     const mode = opts.mode || "set"; // set | peek | compare
     const q = opts.query || "";
-    const specs = specialityList(q);
+    const titles = {
+      peek: "Другая группа",
+      compare: "Добавить группу",
+      set: "Моя группа"
+    };
+    const hints = {
+      peek: "Просто посмотреть расписание. Моя группа не изменится.",
+      compare: "Поставим рядом на выбранные дни.",
+      set: "Выберите специальность и номер."
+    };
     const sheet = openSheet(`
-      <h1>${mode === "peek" ? "Посмотреть другую группу" : mode === "compare" ? "Добавить к сравнению" : "Специальность и группа"}</h1>
+      <h1>${titles[mode] || titles.set}</h1>
+      <p class="small muted" style="margin:0 0 10px">${hints[mode] || hints.set}</p>
       <input class="search" id="gp-q" placeholder="Поиск: терапия, 141-1…" value="${esc(q)}" />
       <div id="gp-list"></div>
     `);
     function paint(query) {
       const list = specialityList(query);
+      const current = mode === "peek" ? viewGroupId() : myGroupId();
       $("#gp-list", sheet).innerHTML = list
         .map((s) => {
           const groups = s.groups
             .map((g) => {
-              const on = g.id === myGroupId() ? " on" : "";
-              return `<button type="button" class="chip${on}" data-gid="${esc(g.id)}">${esc(g.id)}</button>`;
+              const on = g.id === current ? " on" : "";
+              const mine = g.id === myGroupId() ? `<span class="chip-note">моя</span>` : "";
+              return `<button type="button" class="chip${on}" data-gid="${esc(g.id)}">${esc(g.id)}${mine}</button>`;
             })
             .join("");
           return `<div class="card" style="padding:12px 14px">
@@ -421,13 +540,13 @@
             openCompare();
             return;
           }
-          state.settings.groupId = gid;
-          state.settings.peekId = "";
-          state.settings.seenOnboarding = true;
-          await persist();
-          closeModal();
-          toast("Группа " + gid);
-          render();
+          if (gid === myGroupId()) {
+            closeModal();
+            return;
+          }
+          const ok = await askOwnGroupChange(gid, myGroupId() ? "change" : "first");
+          if (!ok) return;
+          await commitOwnGroup(gid);
         });
       });
     }
@@ -448,14 +567,15 @@
     };
     const teacher = S.teacherFor(state.user.teachers, rec, c.id);
     const loc = S.locationFor(state.user.locations, rec, c.id);
+    const locObj = state.user.locations[(rec.base || P.baseTitle(rec.title || ""))] || {};
     const color = recColor(rec, c.group.speciality);
     const ov = ((state.user.days || {})[c.id] || {})[iso] || {};
     const kinds = [
-      ["specialty", "Своя дисциплина"],
+      ["specialty", "Профильная дисциплина"],
       ["course", "Цикл"],
       ["practice", "Практика"],
       ["attestation", "Аттестация"],
-      ["off", "Неучебный день"],
+      ["off", "Без занятий"],
       ["vacation", "Каникулы"]
     ];
     const slots = S.slotsFor(state.settings, state.user.times, Object.assign({}, rec, ov), iso);
@@ -484,8 +604,11 @@
         ${slotBlock("practice", pr.start, pr.end)}
         ${slotBlock("lecture", lc.start, lc.end)}
       </div>
-      <div class="field"><label>Место (корпус, адрес, сторона города)</label>
+      <div class="field"><label>Место в этот день</label>
         <input id="ed-loc" value="${esc(ov.location || loc || "")}" placeholder="например, ГКБ №1, Ленинский пр-т" />
+      </div>
+      <div class="field"><label>Ссылка на карту</label>
+        <input id="ed-loc-url" value="${esc(ov.locationUrl || (locObj && locObj.url) || "")}" placeholder="https://yandex.ru/maps/…" />
       </div>
       <div class="field"><label>Заметка к этому дню</label>
         <textarea id="ed-notes">${esc(ov.notes || rec.notes || "")}</textarea>
@@ -507,33 +630,43 @@
       const colorVal = ($("#ed-color", sheet).value || "").trim().replace("#", "").toUpperCase();
       const partsNow = readParts(sheet);
       const location = $("#ed-loc", sheet).value.trim();
+      const locationUrl = ($("#ed-loc-url", sheet).value || "").trim();
       const notes = $("#ed-notes", sheet).value.trim();
-      const base = P.baseTitle(title || rec.title);
+      const origBase = rec.base || P.baseTitle(rec.title || "");
+      const newBase = P.baseTitle(title || rec.title);
       if (!state.user.days[c.id]) state.user.days[c.id] = {};
       const recDay = {
-        title: title || rec.title,
-        kind,
-        base,
         parts: partsNow,
         location: location || undefined,
+        locationUrl: locationUrl || undefined,
         notes: notes || undefined
       };
       if (partsNow.indexOf("practice") >= 0) recDay.practice = readSlotTimes(sheet, "practice");
       if (partsNow.indexOf("lecture") >= 0) recDay.lecture = readSlotTimes(sheet, "lecture");
+      if (kind === "off") {
+        recDay.off = true;
+      } else if (newBase !== origBase || (kind !== rec.kind && rec.kind !== "off")) {
+        recDay.split = true;
+        recDay.title = title || rec.title;
+        recDay.kind = kind;
+        recDay.base = newBase;
+        recDay.color = colorVal || rec.color;
+      }
       state.user.days[c.id][iso] = recDay;
-      if (colorVal) state.user.colors[base] = colorVal;
-      if (title) state.user.titles[base] = title;
-      if (location) state.user.locations[base] = { text: location };
+      if (location || locationUrl) {
+        const prev = state.user.locations[origBase] || {};
+        if (!prev.text && !prev.url) state.user.locations[origBase] = { text: location, url: locationUrl };
+      }
       await persist();
       closeModal();
-      toast("День сохранён");
+      toast(kind === "off" ? "День без занятий" : recDay.split ? "День сохранён отдельно" : "День сохранён");
       render();
     });
     $("#ed-reset", sheet).addEventListener("click", async () => {
       if (state.user.days[c.id]) delete state.user.days[c.id][iso];
       await persist();
       closeModal();
-      toast("Вернули исходное");
+      toast("Вернули как было");
       render();
     });
   }
@@ -554,6 +687,7 @@
       <div class="field"><label>Почта</label><input id="t-email" value="${esc(t.email || "")}" /></div>
       <div class="field"><label>Важное</label><textarea id="t-notes" placeholder="кафедра, часы консультаций, что взять с собой…">${esc(t.notes || "")}</textarea></div>
       <button type="button" class="btn primary wide" id="t-save">Сохранить</button>
+      <button type="button" class="btn danger wide" id="t-del" style="margin-top:8px">Удалить преподавателя</button>
       ${nested ? `<button type="button" class="btn wide" id="t-back" style="margin-top:8px">Назад</button>` : ""}
     `;
   }
@@ -578,6 +712,21 @@
     });
     const back = $("#t-back", rootEl);
     if (back) back.addEventListener("click", () => onDone && onDone());
+    const del = $("#t-del", rootEl);
+    if (del) {
+      del.addEventListener("click", async () => {
+        if (!confirm("Удалить карточку этого преподавателя?")) return;
+        delete state.user.teachers[base];
+        await persist();
+        toast("Преподаватель удалён");
+        if (onDone) onDone();
+        else {
+          closeModal();
+          render();
+        }
+        render();
+      });
+    }
   }
 
   function openTeacher(rec, nested) {
@@ -676,32 +825,83 @@
     });
   }
 
-  function openDiscipline(rec) {
+  function openCycleEditor(block, opts) {
+    opts = opts || {};
     const c = ctx();
-    if (!c || !rec) return;
-    const base = rec.base || P.baseTitle(rec.title || "");
-    const block = c.eff.blocks.find((b) => (b.base || P.baseTitle(b.title)) === base) || rec;
-    const color = recColor(rec, c.group.speciality);
-    const teacher = S.teacherFor(state.user.teachers, rec, c.id);
-    const loc = S.locationFor(state.user.locations, rec, c.id);
+    if (!c) return;
+    const gid = c.id;
+    const isNew = !!opts.isNew;
+    const b = block || {
+      origin: "extra",
+      id: "x-" + Date.now(),
+      kind: "course",
+      title: "",
+      start: state.viewDate || S.todayISO(),
+      end: addDaysIso(state.viewDate || S.todayISO(), 4),
+      skip: [],
+      color: "4A86E8"
+    };
+    const base = b.base || P.baseTitle(b.title || "");
+    const color = recColor(b, c.group.speciality);
+    const teacher = S.teacherFor(state.user.teachers, b, gid);
+    const loc = S.locationFor(state.user.locations, b, gid);
+    const locUrl = S.locationUrlFor(state.user.locations, b, gid);
     const locObj = state.user.locations[base] || {};
     const disc = (state.user.times.discipline || {})[base] || {};
-    const iso = block.start || state.viewDate || S.todayISO();
-    const slots = S.slotsFor(state.settings, state.user.times, rec, iso);
+    const iso = b.start || state.viewDate || S.todayISO();
+    const slots = S.slotsFor(state.settings, state.user.times, b, iso);
     const byKind = {};
     slots.forEach((s) => {
       byKind[s.kind] = s;
     });
     const pr = byKind.practice || { start: "09:00", end: "12:00" };
     const lc = byKind.lecture || { start: "12:30", end: "15:00" };
+    const kinds = [
+      ["specialty", "Профильная дисциплина"],
+      ["course", "Цикл"],
+      ["practice", "Практика"],
+      ["attestation", "Аттестация"],
+      ["vacation", "Каникулы"]
+    ];
+    const skipSet = new Set(b.skip || []);
+    const workIn = () => {
+      const a = $("#cy-start") && $("#cy-start").value;
+      const e = $("#cy-end") && $("#cy-end").value;
+      const from = a || b.start;
+      const to = e || b.end;
+      return S.workingDates(state.schedule).filter((d) => d >= from && d <= to);
+    };
+    const skipHtml = (days) =>
+      days
+        .map((d) => {
+          const dt = S.parseISO(d);
+          const on = skipSet.has(d);
+          return `<button type="button" class="skip-day${on ? " off" : ""}" data-skip="${d}">${S.formatDM(d)}</button>`;
+        })
+        .join("");
     const sheet = openSheet(`
-      <h1>${esc(recTitle(rec))}</h1>
-      <p class="sub" style="margin-bottom:12px">${esc(S.kindLabel(rec.kind || block.kind))} · ${esc(S.formatRange(block.start, block.end))}</p>
+      <h1>${isNew ? "Новый цикл" : "Цикл"}</h1>
       <div class="field"><label>Название</label>
-        <input id="di-title" value="${esc(recTitle(rec))}" />
+        <input id="cy-title" value="${esc(b.title || "")}" />
       </div>
-      <div class="field"><label>Цвет на календаре</label>
-        ${paletteHtml(color, "di-color")}
+      <div class="field"><label>Тип</label>
+        <select id="cy-kind">${kinds
+          .map(([k, l]) => `<option value="${k}" ${b.kind === k ? "selected" : ""}>${l}</option>`)
+          .join("")}</select>
+      </div>
+      <div class="field"><label>Цвет</label>
+        ${paletteHtml(color, "cy-color")}
+      </div>
+      <div class="field"><label>Даты цикла</label>
+        <div class="cmp-custom" style="margin:0">
+          <input type="date" id="cy-start" value="${esc(b.start || "")}" />
+          <span class="muted">—</span>
+          <input type="date" id="cy-end" value="${esc(b.end || "")}" />
+        </div>
+      </div>
+      <div class="field"><label>Выходные внутри цикла</label>
+        <p class="small muted" style="margin:0 0 8px">Нажмите дату — станет выходным. Цикл останется целым.</p>
+        <div class="skip-grid" id="cy-skip">${skipHtml(S.workingDates(state.schedule).filter((d) => d >= b.start && d <= b.end))}</div>
       </div>
       <div class="field"><label>Практика и лекция</label>
         ${partsHtml(disc.parts || slots.map((s) => s.kind))}
@@ -709,33 +909,103 @@
         ${slotBlock("lecture", (disc.lecture && disc.lecture.start) || lc.start, (disc.lecture && disc.lecture.end) || lc.end)}
       </div>
       <div class="field"><label>Место</label>
-        <input id="di-loc" value="${esc(loc || locObj.text || "")}" />
+        <input id="cy-loc" value="${esc(loc || locObj.text || "")}" placeholder="корпус, адрес" />
       </div>
-      <button type="button" class="btn ghost wide" id="di-teacher">Преподаватель${teacher && teacher.name ? ": " + esc(teacher.name) : ""}</button>
-      <button type="button" class="btn primary wide" id="di-save" style="margin-top:10px">Сохранить</button>
+      <div class="field"><label>Ссылка на карту</label>
+        <input id="cy-loc-url" value="${esc(locUrl || locObj.url || "")}" placeholder="https://yandex.ru/maps/…" />
+      </div>
+      <button type="button" class="btn ghost wide" id="cy-teacher">Преподаватель${teacher && teacher.name ? ": " + esc(teacher.name) : ""}</button>
+      <button type="button" class="btn primary wide" id="cy-save" style="margin-top:10px">Сохранить цикл</button>
+      ${!isNew ? `<button type="button" class="btn danger wide" id="cy-del" style="margin-top:8px">Удалить цикл</button>` : ""}
     `);
     bindPalette(sheet);
     bindParts(sheet);
-    $("#di-teacher", sheet).addEventListener("click", () => {
-      openTeacher(rec, true);
+    const skipBox = $("#cy-skip", sheet);
+    const paintSkip = () => {
+      skipBox.innerHTML = skipHtml(workIn());
+    };
+    $("#cy-start", sheet).addEventListener("change", paintSkip);
+    $("#cy-end", sheet).addEventListener("change", paintSkip);
+    skipBox.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-skip]");
+      if (!btn) return;
+      const d = btn.getAttribute("data-skip");
+      if (skipSet.has(d)) skipSet.delete(d);
+      else skipSet.add(d);
+      btn.classList.toggle("off");
     });
-    $("#di-save", sheet).addEventListener("click", async () => {
-      const title = $("#di-title", sheet).value.trim();
-      const colorVal = ($("#di-color", sheet).value || "").trim().replace("#", "").toUpperCase();
-      const location = $("#di-loc", sheet).value.trim();
-      if (title) state.user.titles[base] = title;
-      if (colorVal) state.user.colors[base] = colorVal;
+    $("#cy-teacher", sheet).addEventListener("click", () => {
+      openTeacher({ title: $("#cy-title", sheet).value || b.title, base: P.baseTitle($("#cy-title", sheet).value || b.title || base) }, true);
+    });
+    $("#cy-save", sheet).addEventListener("click", async () => {
+      let start = $("#cy-start", sheet).value;
+      let end = $("#cy-end", sheet).value;
+      if (start && end && start > end) {
+        const t = start;
+        start = end;
+        end = t;
+      }
+      const title = $("#cy-title", sheet).value.trim() || "Цикл";
+      const kind = $("#cy-kind", sheet).value;
+      const colorVal = ($("#cy-color", sheet).value || "").trim().replace("#", "").toUpperCase();
+      const skip = Array.from(skipSet).filter((d) => d >= start && d <= end);
+      const locText = $("#cy-loc", sheet).value.trim();
+      const locHref = $("#cy-loc-url", sheet).value.trim();
+      const newBase = P.baseTitle(title);
       const partsNow = readParts(sheet);
       const recT = { parts: partsNow };
       if (partsNow.indexOf("practice") >= 0) recT.practice = readSlotTimes(sheet, "practice");
       if (partsNow.indexOf("lecture") >= 0) recT.lecture = readSlotTimes(sheet, "lecture");
-      state.user.times.discipline[base] = recT;
-      if (location) state.user.locations[base] = Object.assign({}, locObj, { text: location });
+      state.user.times.discipline[newBase] = recT;
+      state.user.colors[newBase] = colorVal;
+      if (title) state.user.titles[newBase] = title;
+      state.user.locations[newBase] = { text: locText, url: locHref };
+      if (b.origin === "split" && state.user.days[gid] && state.user.days[gid][b.start]) {
+        delete state.user.days[gid][b.start].split;
+      }
+      if (isNew || b.origin === "extra" || b.origin === "split") {
+        if (!state.user.extraCycles[gid]) state.user.extraCycles[gid] = [];
+        const item = { id: b.id, kind, title, color: colorVal, start, end, skip };
+        const list = state.user.extraCycles[gid];
+        const ix = list.findIndex((x) => x.id === b.id);
+        if (ix >= 0) list[ix] = item;
+        else list.push(item);
+      } else {
+        if (!state.user.cyclePatches[gid]) state.user.cyclePatches[gid] = {};
+        state.user.cyclePatches[gid][b.id] = { start, end, skip, title, kind, color: colorVal };
+      }
       await persist();
       closeModal();
-      toast("Цикл обновлён");
+      toast("Цикл сохранён");
       render();
     });
+    const del = $("#cy-del", sheet);
+    if (del) {
+      del.addEventListener("click", async () => {
+        if (!confirm("Удалить этот цикл?")) return;
+        if (b.origin === "extra") {
+          state.user.extraCycles[gid] = (state.user.extraCycles[gid] || []).filter((x) => x.id !== b.id);
+        } else {
+          if (!state.user.cyclePatches[gid]) state.user.cyclePatches[gid] = {};
+          state.user.cyclePatches[gid][b.id] = Object.assign({}, state.user.cyclePatches[gid][b.id] || {}, {
+            deleted: true
+          });
+        }
+        await persist();
+        closeModal();
+        toast("Цикл удалён");
+        render();
+      });
+    }
+  }
+
+  function openDiscipline(rec) {
+    const c = ctx();
+    if (!c || !rec) return;
+    const block =
+      (rec.id && c.eff.blocks.find((b) => b.id === rec.id)) ||
+      c.eff.blocks.find((b) => (b.base || P.baseTitle(b.title)) === (rec.base || P.baseTitle(rec.title || "")));
+    openCycleEditor(block || rec);
   }
 
   function openLocation(rec) {
@@ -829,7 +1099,7 @@
     const head = dates
       .map((d) => {
         const dt = S.parseISO(d);
-        return `<th>${S.WD_SHORT[dt.getDay()]}<br>${dt.getDate()}.${dt.getMonth() + 1}</th>`;
+        return `<th>${S.WD_SHORT[dt.getDay()]}<br>${S.formatDM(d)}</th>`;
       })
       .join("");
     const rows = ids
@@ -903,7 +1173,7 @@
       }</tbody></table></div>
       <div class="btn-row">
         <button type="button" class="btn ghost" id="cmp-add">+ группу</button>
-        <button type="button" class="btn" id="cmp-clear">Убрать чужие</button>
+        <button type="button" class="btn" id="cmp-clear">Очистить</button>
       </div>
       <h2 style="margin-top:16px">Совпадения в этом периоде</h2>
       ${
@@ -918,7 +1188,7 @@
           </div>`
               )
               .join("")
-          : `<p class="muted small">В выбранном окне у добавленных групп нет тех же дисциплин в те же дни.</p>`
+          : `<p class="muted small">В эти дни нет общих занятий с добавленными группами.</p>`
       }
     `);
     $$("[data-cmp-mode]", sheet).forEach((btn) => {
@@ -957,6 +1227,7 @@
   /* ---------- views ---------- */
   function isHoliday(iso, rec) {
     if (S.weekday(iso) === 0) return true;
+    if (rec && rec.off) return true;
     return !!(rec && (rec.kind === "off" || rec.kind === "attestation" || rec.kind === "vacation"));
   }
 
@@ -966,15 +1237,23 @@
       const d = new Date(monday);
       d.setDate(monday.getDate() + i);
       const id = S.toISO(d);
-      const rec = S.recAt(c.eff, id);
+      const recs = S.recsAt(c.eff, id).filter((r) => !r.off);
+      const rec = recs[0];
       const isToday = id === S.todayISO();
       const isSel = id === selectedIso;
-      const hol = isHoliday(id, rec);
-      const col = rec && rec.kind !== "off" && rec.kind !== "vacation" ? hex(recColor(rec, c.group.speciality)) : "transparent";
-      cells.push(`<button type="button" class="d${isToday ? " today" : ""}${isSel ? " active" : ""}${rec ? "" : " off"}${hol ? " hol" : ""}" data-jump="${id}">
+      const hol = isHoliday(id, rec) || (S.weekday(id) === 0);
+      const dots = recs.length
+        ? recs
+            .slice(0, 3)
+            .map((r) => `<i class="dot" style="background:${hex(recColor(r, c.group.speciality))}"></i>`)
+            .join("")
+        : `<i class="dot" style="background:${hol ? "#e8d4d0" : "#d0d5dd"}"></i>`;
+      const monthBit = d.getDate() === 1 || i === 0 ? `<div class="mo">${S.MONTHS_SHORT[d.getMonth()]}</div>` : `<div class="mo">&nbsp;</div>`;
+      cells.push(`<button type="button" class="d${isToday ? " today" : ""}${isSel ? " active" : ""}${recs.length ? "" : " off"}${hol ? " hol" : ""}" data-jump="${id}">
         <div class="wd">${S.WD_SHORT[d.getDay()]}</div>
         <div class="n">${d.getDate()}</div>
-        <div class="dot" style="background:${col !== "transparent" ? col : hol ? "#e8d4d0" : "#d0d5dd"}"></div>
+        ${monthBit}
+        <div class="dots">${dots}</div>
       </button>`);
     }
     return `<div class="week">${cells.join("")}</div>`;
@@ -988,11 +1267,16 @@
     prev.setDate(monday.getDate() - 7);
     const next = new Date(monday);
     next.setDate(monday.getDate() + 7);
-    return `<div class="week-swipe"><div class="week-track">
+    const sun = new Date(monday);
+    sun.setDate(monday.getDate() + 6);
+    const cap = S.formatRange(S.toISO(monday), S.toISO(sun));
+    return `<div class="week-block">
+      <div class="week-cap">${esc(cap)}</div>
+      <div class="week-swipe"><div class="week-track">
       ${weekRow(prev, iso, c)}
       ${weekRow(monday, iso, c)}
       ${weekRow(next, iso, c)}
-    </div></div>`;
+    </div></div></div>`;
   }
 
   function teacherLine(teacher) {
@@ -1031,26 +1315,26 @@
         </div>
         ${first ? cycleCard(c, first, span.firstWork, { preview: true }) : ""}`;
     } else {
-      const sun = weekdaySunday(viewDate);
-      const near = S.nearest(state.schedule, c.eff, viewDate);
-      const iso = sun ? near.next || near.date : near.exact ? viewDate : near.date;
-      const rec = S.recAt(c.eff, viewDate);
-      const block = S.blockAt(c.eff, viewDate) || S.blockAt(c.eff, iso);
-      if (sun && !rec) {
+      const recs = S.recsAt(c.eff, viewDate).filter((r) => !r.off);
+      const all = S.recsAt(c.eff, viewDate);
+      if (!recs.length) {
         body = `
           <div class="card">
             <div class="hero-date">${esc(S.formatLong(viewDate))}</div>
-            <p class="sub">Воскресенье, выходной.</p>
-          </div>
-          ${block ? cycleCard(c, block, iso, { nextLabel: "Ближайший день" }) : ""}`;
-      } else if (!rec) {
-        body = `
-          <div class="card">
-            <div class="hero-date">${esc(S.formatLong(viewDate))}</div>
-            <p class="sub">В таблице этот день не учебный.</p>
+            <p class="sub">${weekdaySunday(viewDate) ? "Воскресенье, выходной." : "Занятий нет."}</p>
           </div>`;
+        const nxt = S.nextBlock(c.eff, viewDate);
+        if (nxt) body += cycleCard(c, nxt, nxt.start, { nextLabel: "Ближайший цикл" });
       } else {
-        body = cycleCard(c, block, viewDate, {});
+        body = recs
+          .map((r, i) => {
+            const block = (r.id && c.eff.blocks.find((b) => b.id === r.id)) || S.blockAt(c.eff, viewDate);
+            return cycleCard(c, block, viewDate, {
+              nextLabel: i === 0 && recs.length > 1 ? "В этот день" : "",
+              hideNext: i < recs.length - 1
+            });
+          })
+          .join("");
       }
     }
 
@@ -1063,7 +1347,7 @@
           viewDate !== today
             ? `<button type="button" class="btn ghost" data-act="jump-today">К сегодня</button>`
             : ""
-        }<button type="button" class="group-pill" data-act="pick-group">${esc(c.group.id)} ▾</button></div>`
+        }<button type="button" class="group-pill${state.settings.peekId ? " peeking" : ""}" data-act="peek">${esc(c.group.id)} ▾</button></div>`
       )}
       ${weekStrip(viewDate, c)}
       ${body}
@@ -1076,19 +1360,28 @@
 
   function peekBanner(c) {
     if (!state.settings.peekId) return "";
+    const mine = groupOf(myGroupId());
     return `<div class="peek-banner">
-      <span>Просмотр ${esc(c.group.id)} · ${esc(c.group.speciality)}</span>
-      <span style="display:flex;gap:6px">
-        <button type="button" class="btn" data-act="adopt-peek" style="padding:6px 10px;font-size:0.78rem">Сделать своей</button>
-        <button type="button" class="btn ico" data-act="unpeek" title="Вернуться">✕</button>
-      </span>
+      <div>
+        <div class="peek-k">Смотрите другую</div>
+        <div>${esc(c.group.id)} · ${esc(c.group.speciality)}</div>
+        ${mine ? `<div class="small">моя: ${esc(mine.id)}</div>` : ""}
+      </div>
+      <div class="peek-actions">
+        <button type="button" class="btn primary" data-act="unpeek">К моей</button>
+        <button type="button" class="btn" data-act="adopt-peek">Это моя</button>
+      </div>
     </div>`;
   }
 
   function cycleCard(c, block, iso, opts) {
     opts = opts || {};
     if (!block) return "";
-    const rec = S.recAt(c.eff, iso) || block;
+    const rec =
+      (block &&
+        S.recsAt(c.eff, iso).find((r) => r.id === block.id)) ||
+      S.recAt(c.eff, iso) ||
+      block;
     const color = hex(recColor(rec, c.group.speciality));
     const title = displayTitle(rec);
     const orig = rec.title && S.expandName(rec.title) !== rec.title ? rec.title : "";
@@ -1116,7 +1409,7 @@
       yearTotal > (prog ? prog.total : 0)
         ? `<div class="small muted" style="margin-top:6px">Всего по дисциплине в году: день ${yearGone} из ${yearTotal}</div>`
         : "";
-    const maps = mapsHref(loc, locObj.url);
+    const maps = mapsHref(loc, rec.locationUrl || locObj.url || S.locationUrlFor(state.user.locations, rec, c.id));
     const tel = teacher && teacher.phone ? `tel:${teacher.phone.replace(/\s/g, "")}` : "";
     const tg = teacher && teacher.telegram
       ? teacher.telegram.startsWith("http")
@@ -1165,7 +1458,10 @@
             ${tg ? `<a class="plain" href="${esc(tg)}" target="_blank" rel="noopener">TG</a>` : ""}
           </div>
         </div>
-        <button type="button" class="btn wide" data-day="${iso}" style="margin-top:12px">Изменить день</button>
+        <div class="btn-row" style="margin-top:12px">
+          <button type="button" class="btn" data-day="${iso}">День</button>
+          <button type="button" class="btn ghost" data-cycle="${esc(block.id || "")}">Цикл</button>
+        </div>
       </article>
       ${
         peers.length
@@ -1183,7 +1479,7 @@
           : ""
       }
       ${
-        nxt
+        nxt && !opts.hideNext
           ? `<div class="card">
         <h2>Дальше</h2>
         <div class="disc-title" style="font-size:1.05rem">${esc(S.expandName(nxt.title))}</div>
@@ -1194,42 +1490,37 @@
     `;
   }
 
-  function barKey(rec, block) {
-    if (!rec) return "";
-    if (block && block.id) return block.id;
-    return (rec.kind || "") + "|" + (rec.base || rec.title || "");
-  }
-
   function weekBars(week, c) {
-    const bars = [];
-    let i = 0;
-    while (i < 7) {
-      const iso = week[i];
-      if (!iso) {
-        i++;
-        continue;
+    const spans = [];
+    (c.eff.blocks || []).forEach((b) => {
+      let i = 0;
+      while (i < 7) {
+        const iso = week[i];
+        const recs = iso ? S.recsAt(c.eff, iso).filter((r) => !r.off && r.id === b.id) : [];
+        if (!recs.length) {
+          i++;
+          continue;
+        }
+        let j = i;
+        while (j + 1 < 7) {
+          const niso = week[j + 1];
+          const nrecs = niso ? S.recsAt(c.eff, niso).filter((r) => !r.off && r.id === b.id) : [];
+          if (!nrecs.length) break;
+          j++;
+        }
+        spans.push({ col: i + 1, span: j - i + 1, rec: recs[0], block: b, iso: week[i] });
+        i = j + 1;
       }
-      const rec = S.recAt(c.eff, iso);
-      if (!rec || rec.kind === "off") {
-        i++;
-        continue;
-      }
-      const block = S.blockAt(c.eff, iso);
-      const key = barKey(rec, block);
-      let j = i;
-      while (j + 1 < 7) {
-        const niso = week[j + 1];
-        if (!niso) break;
-        const nrec = S.recAt(c.eff, niso);
-        if (!nrec || nrec.kind === "off") break;
-        const nblock = S.blockAt(c.eff, niso);
-        if (barKey(nrec, nblock) !== key) break;
-        j++;
-      }
-      bars.push({ col: i + 1, span: j - i + 1, rec, block, iso });
-      i = j + 1;
-    }
-    return bars;
+    });
+    spans.sort((a, b) => a.col - b.col || b.span - a.span);
+    const laneEnd = [];
+    spans.forEach((s) => {
+      let lane = 0;
+      while (laneEnd[lane] != null && s.col <= laneEnd[lane]) lane++;
+      s.lane = lane;
+      laneEnd[lane] = s.col + s.span - 1;
+    });
+    return { bars: spans, lanes: Math.max(1, laneEnd.length, 1) };
   }
 
   function renderMonth(c, y, m, today) {
@@ -1243,13 +1534,17 @@
           .map((iso, idx) => {
             if (!iso) return `<div class="cal-num empty" style="grid-column:${idx + 1}"></div>`;
             const dt = S.parseISO(iso);
-            const rec = S.recAt(c.eff, iso);
-            const hol = isHoliday(iso, rec);
-            const cls = `cal-num${iso === today ? " today" : ""}${hol ? " hol" : ""}${rec ? " has" : ""}`;
-            return `<button type="button" class="${cls}" data-day="${iso}" style="grid-column:${idx + 1}">${dt.getDate()}</button>`;
+            const recs = S.recsAt(c.eff, iso).filter((r) => !r.off);
+            const rec = recs[0];
+            const hol = isHoliday(iso, rec) || !recs.length;
+            const cls = `cal-num${iso === today ? " today" : ""}${hol ? " hol" : ""}${recs.length ? " has" : ""}`;
+            return `<button type="button" class="${cls}" data-day="${iso}" style="grid-column:${idx + 1}">${dt.getDate()}${
+              dt.getDate() === 1 ? `<span class="cal-mo">${S.MONTHS_SHORT[dt.getMonth()]}</span>` : ""
+            }</button>`;
           })
           .join("");
-        const bars = weekBars(week, c)
+        const packed = weekBars(week, c);
+        const bars = packed.bars
           .map((b) => {
             const col = hex(recColor(b.rec, c.group.speciality));
             const ink = S.textOn(col.replace("#", ""));
@@ -1257,12 +1552,12 @@
             const title = recTitle(b.rec);
             const short = S.shortName(title);
             const label = b.span === 1 ? short.slice(0, 5) : b.span === 2 ? short.slice(0, 9) : short;
-            const base = b.rec.base || P.baseTitle(b.rec.title || "");
-            return `<button type="button" class="cal-bar" data-disc="${esc(base)}" title="${esc(title)}"
-              style="grid-column:${b.col} / span ${b.span};background:${col};color:${ink};border-left-color:${edge}">${esc(label)}</button>`;
+            const row = 2 + (b.lane || 0);
+            return `<button type="button" class="cal-bar" data-cycle="${esc(b.block.id || "")}" title="${esc(title)}"
+              style="grid-column:${b.col} / span ${b.span};grid-row:${row};background:${col};color:${ink};border-left-color:${edge}">${esc(label)}</button>`;
           })
           .join("");
-        return `<div class="cal-week">${nums}${bars}</div>`;
+        return `<div class="cal-week" style="--lanes:${packed.lanes}">${nums}${bars}</div>`;
       })
       .join("");
     return `<section class="cal-month">
@@ -1286,10 +1581,12 @@
       S.monthCells(sm.y, sm.m)
         .filter(Boolean)
         .forEach((iso) => {
-          const rec = S.recAt(c.eff, iso);
-          if (!rec) return;
-          const key = rec.kind + "|" + (rec.base || rec.title);
-          if (!legendMap.has(key)) legendMap.set(key, rec);
+          S.recsAt(c.eff, iso)
+            .filter((r) => !r.off)
+            .forEach((rec) => {
+              const key = rec.kind + "|" + (rec.base || rec.title) + "|" + (rec.id || "");
+              if (!legendMap.has(key)) legendMap.set(key, rec);
+            });
         });
     }
     const start = { y: state.cal.y, m: state.cal.m };
@@ -1303,7 +1600,7 @@
       .map((rec) => {
         const col = hex(recColor(rec, c.group.speciality));
         const base = rec.base || P.baseTitle(rec.title || "");
-        return `<button type="button" class="legend-chip" data-disc="${esc(base)}" title="${esc(recTitle(rec))}">
+        return `<button type="button" class="legend-chip" data-cycle="${esc(rec.id || "")}" data-disc="${esc(base)}" title="${esc(recTitle(rec))}">
           <i class="swatch" style="background:${col}"></i>${esc(S.shortName(recTitle(rec)))}
         </button>`;
       })
@@ -1322,9 +1619,11 @@
           <button type="button" class="chip${span === 1 ? " on" : ""}" data-act="cal-span-1">1 месяц</button>
           <button type="button" class="chip${span === 3 ? " on" : ""}" data-act="cal-span-3">3 месяца</button>
         </div>
-        <div class="legend sticky-legend">${legend || `<span class="muted small">Нет занятий в этом окне</span>`}</div>
       </div>
       ${months.join("")}
+      <div class="legend">${legend}
+        <button type="button" class="legend-chip add" data-act="new-cycle" title="Добавить цикл">＋</button>
+      </div>
     `;
   }
 
@@ -1336,7 +1635,7 @@
     const filters = [
       ["all", "Все"],
       ["course", "Циклы"],
-      ["specialty", "Своя"],
+      ["specialty", "Профиль"],
       ["practice", "Практика"]
     ];
     let lastMonth = "";
@@ -1350,7 +1649,7 @@
         lastMonth = month;
       }
       const col = hex(recColor(b, c.group.speciality));
-      items.push(`<button type="button" class="cycle" data-day="${b.start}">
+      items.push(`<button type="button" class="cycle" data-cycle="${esc(b.id)}">
         <div class="mark" style="background:${col}"></div>
         <div>
           <div class="when">${esc(S.formatRange(b.start, b.end))}</div>
@@ -1361,12 +1660,13 @@
     });
     return `
       ${peekBanner(c)}
-      ${appBar("Циклы", esc(c.group.speciality) + " · " + esc(c.group.id))}
+      ${appBar("Циклы", esc(c.group.speciality) + " · " + esc(c.group.id), `<button type="button" class="btn primary" data-act="new-cycle">＋ цикл</button>`)}
       <input class="search" id="cyc-q" placeholder="Найти дисциплину…" value="${esc(state.cycleQuery)}" />
       <div class="filters">${filters
         .map(([k, l]) => `<button type="button" class="chip${f === k ? " on" : ""}" data-filter="${k}">${l}</button>`)
         .join("")}</div>
       ${items.join("") || `<div class="empty">Ничего не найдено</div>`}
+      <button type="button" class="btn primary wide" data-act="new-cycle" style="margin-top:12px">Добавить цикл</button>
     `;
   }
 
@@ -1378,11 +1678,11 @@
     });
     const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
     return `
-      ${appBar("Ещё", "Группа и данные на устройстве")}
+      ${appBar("Ещё")}
       <div class="card">
         <div class="setting-row">
           <div><div class="t">Моя группа</div><div class="s">${g ? esc(g.speciality) + " · " + esc(g.id) : "не выбрана"}</div></div>
-          <button type="button" class="btn" data-act="pick-group">Сменить</button>
+          <button type="button" class="btn" data-act="set-group">Сменить</button>
         </div>
         <div class="setting-row">
           <div><div class="t">Время по умолчанию</div><div class="s">практика ${esc(S.formatTimeSpan(state.settings.practiceStart, state.settings.practiceEnd))}<br>лекция ${esc(S.formatTimeSpan(state.settings.lectureStart, state.settings.lectureEnd))}</div></div>
@@ -1396,45 +1696,59 @@
             ? teachers
                 .map((k) => {
                   const t = state.user.teachers[k];
-                  return `<button type="button" class="list-btn" data-teach="${esc(k)}">
+                  return `<div class="teach-row">
+                    <button type="button" class="list-btn" data-teach="${esc(k)}" style="margin:0;flex:1">
                     <div class="t">${esc(t.name || S.expandName(k))}</div>
                     <div class="s">${esc(S.expandName(k))}${t.phone ? " · " + esc(t.phone) : ""}</div>
-                  </button>`;
+                  </button>
+                    <button type="button" class="btn danger" data-del-teach="${esc(k)}" aria-label="Удалить">✕</button>
+                  </div>`;
                 })
                 .join("")
-            : `<p class="small muted">Пока пусто — откройте цикл и добавьте контакты преподавателя.</p>`
+            : `<p class="small muted">Пока пусто. Контакты можно добавить в карточке цикла.</p>`
         }
       </div>
       <div class="card">
         <h2>Расписание</h2>
-        <p class="small muted">Копия на этом телефоне. Само из таблицы не подтягивается — если документ сломают, приложение не пострадает. Обновить можно только кнопкой ниже.</p>
-        <p class="small muted">Сохранено: ${esc(state.schedule.savedAt ? S.formatShort(state.schedule.savedAt.slice(0, 10)) : "встроенная копия")}</p>
-        <div class="field"><label>Google Таблица (по желанию)</label>
+        <p class="small muted">Хранится на этом телефоне. Само не обновляется — только кнопкой ниже.</p>
+        <p class="small muted">Обновлено: ${esc(state.schedule && state.schedule.savedAt ? S.formatShort(state.schedule.savedAt.slice(0, 10)) : "как в приложении")}</p>
+        <div class="field"><label>Ссылка на таблицу</label>
           <input id="sheets-url" value="${esc(state.settings.sheetsUrl || "")}" />
         </div>
-        <button type="button" class="btn primary wide" data-act="import-sheets">Обновить из таблицы</button>
+        ${
+          isOffline()
+            ? `<p class="small muted">Без сети таблицу не обновить — можно выбрать файл Excel с телефона.</p>`
+            : `<button type="button" class="btn primary wide" data-act="import-sheets">Обновить из таблицы</button>`
+        }
         <div class="btn-row">
-          <button type="button" class="btn" data-act="import-file">Файл xlsx</button>
-          <button type="button" class="btn" data-act="restore-seed">Встроенная копия</button>
+          <button type="button" class="btn" data-act="import-file">Файл Excel</button>
+          <button type="button" class="btn" data-act="restore-seed">Как в приложении</button>
         </div>
       </div>
       <div class="card">
-        <h2>На устройстве</h2>
+        <h2>Копия данных</h2>
+        <p class="small muted">На случай нового телефона, очистки Safari или удаления ярлыка.</p>
         <div class="btn-row">
-          <button type="button" class="btn" data-act="export">Экспорт заметок</button>
+          <button type="button" class="btn" data-act="export-backup">Скачать</button>
+          <button type="button" class="btn" data-act="import-backup">Загрузить</button>
+        </div>
+        <div class="btn-row">
           <button type="button" class="btn danger" data-act="reset-notes">Стереть мои правки</button>
         </div>
-        <p class="small muted" style="margin-top:8px">Время, места и контакты живут только здесь и работают без сети.</p>
       </div>
       <div class="card">
-        <h2>На экран Домой</h2>
-        <p class="small muted">${
+        <h2>На экран «Домой»</h2>
+        <p class="small muted">Всё хранится только на этом телефоне, не в облаке. Без интернета открывается, если хотя бы раз заходили с сетью.</p>
+        ${
           ios
-            ? "Откройте этот сайт в Safari → «Поделиться» → «На экран «Домой». Дальше работает как приложение, в том числе офлайн."
-            : "В браузере: меню → «Установить приложение» или «Добавить на главный экран»."
-        }</p>
+            ? `<p class="small muted">Safari иногда сам чистит сайты. С ярлыка данные обычно живут дольше.</p>
+        <p class="small muted">Safari и ярлык — разные копии. Если уже пользовались в Safari: сначала «Скачать», потом откройте с экрана Домой и «Загрузить».</p>
+        <p class="small muted">Safari → Поделиться → На экран «Домой».</p>`
+            : `<p class="small muted">В браузере и с ярлыка обычно одни и те же данные.</p>
+        <p class="small muted">В меню браузера: «Установить приложение» или «На главный экран».</p>`
+        }
       </div>
-      <p class="small faint" style="text-align:center;margin:18px 0 8px">ЮУГМУ · ординатура · ${esc(state.schedule.yearLabel || "2026–2027")}</p>
+      <p class="small faint" style="text-align:center;margin:18px 0 8px">ЮУГМУ · ординатура · ${esc((state.schedule && state.schedule.yearLabel) || "2026–2027")}</p>
     `;
   }
 
@@ -1442,8 +1756,8 @@
     return `
       ${appBar("Ординатура", "Южно-Уральский государственный медицинский университет")}
       <div class="card">
-        <p>Выберите специальность и группу. Цвета циклов те же, что в общей таблице. Дни без заливки — ваша профильная дисциплина.</p>
-        <button type="button" class="btn primary wide" data-act="pick-group" style="margin-top:12px">Выбрать группу</button>
+        <p>Выберите группу — покажем её расписание. Цвета как в общей таблице.</p>
+        <button type="button" class="btn primary wide" data-act="set-group" style="margin-top:12px">Выбрать группу</button>
       </div>
     `;
   }
@@ -1457,6 +1771,9 @@
     else if (state.view === "cycles") html = renderCycles();
     else html = renderMore();
     main.innerHTML = html;
+    if (isOffline() && !main.querySelector(".offline-bar")) {
+      main.insertAdjacentHTML("afterbegin", offlineBanner());
+    }
     $$(".nav-item").forEach((b) => b.classList.toggle("active", b.getAttribute("data-view") === state.view));
     bindView();
   }
@@ -1552,7 +1869,7 @@
   }
 
   async function onAction(act, el) {
-    if (act === "pick-group") return renderGroupPicker({ mode: "set" });
+    if (act === "set-group" || act === "pick-group") return renderGroupPicker({ mode: "set" });
     if (act === "peek") return renderGroupPicker({ mode: "peek" });
     if (act === "unpeek") {
       state.settings.peekId = "";
@@ -1560,16 +1877,23 @@
       return render();
     }
     if (act === "adopt-peek" && state.settings.peekId) {
-      state.settings.groupId = state.settings.peekId;
-      state.settings.peekId = "";
-      state.settings.seenOnboarding = true;
-      await persist();
-      toast("Группа " + state.settings.groupId);
-      return render();
+      const gid = state.settings.peekId;
+      if (gid === myGroupId()) {
+        state.settings.peekId = "";
+        await persist();
+        return render();
+      }
+      const ok = await askOwnGroupChange(gid, "adopt");
+      if (!ok) return;
+      return commitOwnGroup(gid);
     }
     if (act === "jump-today") {
       state.viewDate = S.todayISO();
       return render();
+    }
+    if (act === "new-cycle") {
+      openCycleEditor(null, { isNew: true });
+      return;
     }
     if (act === "compare") return openCompare();
     if (act === "times" || act === "times-global") {
@@ -1629,27 +1953,32 @@
     }
     if (act === "import-file") {
       if (
-        !confirm(
-          "Заменить исходное расписание файлом? Ваши заметки, места и преподаватели останутся. Таблица сама не обновляется — только по этой кнопке."
-        )
+        !confirm("Заменить расписание файлом? Заметки останутся.")
       )
         return;
       $("#xlsx-input").click();
       return;
     }
-    if (act === "import-sheets") return importFromSheets();
+    if (act === "import-sheets") {
+      if (isOffline()) return toast("Нет сети. Можно выбрать файл Excel с телефона.");
+      return importFromSheets();
+    }
     if (act === "restore-seed") return restoreSeed();
     if (act === "export") return exportNotes();
+    if (act === "export-backup") return exportBackup();
+    if (act === "import-backup") {
+      $("#backup-input").click();
+      return;
+    }
     if (act === "reset-notes") return resetNotes();
   }
 
   async function importFromSheets() {
+    if (isOffline()) return toast("Нет сети. Можно выбрать файл Excel с телефона.");
     const url = state.settings.sheetsUrl || $("#sheets-url")?.value;
     if (!url) return toast("Вставьте ссылку на таблицу");
     if (
-      !confirm(
-        "Подтянуть таблицу сейчас? Если в документе ошибка, расписание в приложении может сломаться. Заметки и контакты не сотрутся. Само по себе приложение таблицу не читает."
-      )
+      !confirm("Обновить расписание из таблицы? Заметки останутся.")
     )
       return;
     state.settings.sheetsUrl = url;
@@ -1663,7 +1992,7 @@
       const buf = await res.arrayBuffer();
       await ingestXlsx(buf, "google-sheets.xlsx");
     } catch (err) {
-      toast("Google не отдаёт файл из браузера. Скачайте xlsx и нажмите «Файл».");
+      toast("Таблица не открылась. Скачайте файл и нажмите «Файл Excel».");
     }
   }
 
@@ -1687,9 +2016,7 @@
   async function restoreSeed() {
     if (!window.SEED) return toast("Встроенное расписание недоступно");
     if (
-      !confirm(
-        "Вернуть копию, которая лежит в приложении (на момент установки)? Текущая таблица в памяти заменится. Заметки останутся."
-      )
+      !confirm("Вернуть исходное расписание из приложения? Заметки останутся.")
     )
       return;
     const copy = JSON.parse(JSON.stringify(window.SEED));
@@ -1697,24 +2024,74 @@
     copy.source = "bundled";
     state.schedule = copy;
     await persistSchedule();
-    toast("Вернули встроенную копию 2026–2027");
+    toast("Вернули исходное расписание");
     render();
   }
 
   function exportNotes() {
-    const blob = new Blob(
-      [JSON.stringify({ settings: state.settings, user: state.user }, null, 2)],
-      { type: "application/json" }
-    );
+    exportBackup();
+  }
+
+  function exportBackup() {
+    const payload = {
+      version: 2,
+      app: "ordinatura",
+      exportedAt: new Date().toISOString(),
+      schedule: state.schedule,
+      settings: state.settings,
+      user: state.user
+    };
+    const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = "ordinatura-zametki.json";
+    const day = S.toISO(new Date());
+    a.download = "ordinatura-backup-" + day + ".json";
     a.click();
-    toast("Файл заметок скачан");
+    toast("Копия скачана");
+  }
+
+  async function importBackupFile(file) {
+    const text = await file.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new Error("Это не JSON");
+    }
+    if (!data || typeof data !== "object") throw new Error("Пустой файл");
+    const settings = data.settings || {};
+    const user = data.user || {};
+    const sched = data.schedule;
+    if (sched && !Array.isArray(sched.groups)) throw new Error("В файле нет расписания");
+    if (
+      !confirm("Заменить всё данными из файла?")
+    )
+      return;
+    if (sched && sched.groups) {
+      state.schedule = sched;
+      await persistSchedule();
+    }
+    state.settings = Object.assign(S.defaultSettings(), settings);
+    state.user = Object.assign(S.emptyUser(), user);
+    if (!state.user.days) state.user.days = {};
+    if (!state.user.teachers) state.user.teachers = {};
+    if (!state.user.locations) state.user.locations = {};
+    if (!state.user.times) state.user.times = { discipline: {} };
+    if (!state.user.cyclePatches) state.user.cyclePatches = {};
+    if (!state.user.extraCycles) state.user.extraCycles = {};
+    state.compare = Array.isArray(state.settings.compareIds) ? state.settings.compareIds.slice() : [];
+    state.compareRange = {
+      mode: state.settings.compareMode || "cycle",
+      from: state.settings.compareFrom || "",
+      to: state.settings.compareTo || ""
+    };
+    await persist();
+    toast("Копия восстановлена");
+    render();
   }
 
   async function resetNotes() {
-    if (!confirm("Удалить все ваши правки, места, время и контакты? Исходное расписание останется.")) return;
+    if (!confirm("Удалить все мои заметки, места и контакты? Расписание останется.")) return;
     state.user = S.emptyUser();
     await persist();
     toast("Правки удалены");
@@ -1746,6 +2123,27 @@
       state.viewDate = jump.getAttribute("data-jump");
       state.view = "today";
       render();
+      return;
+    }
+    const delTeach = e.target.closest("[data-del-teach]");
+    if (delTeach) {
+      const key = delTeach.getAttribute("data-del-teach");
+      if (confirm("Удалить этого преподавателя?")) {
+        delete state.user.teachers[key];
+        persist().then(() => {
+          toast("Преподаватель удалён");
+          render();
+        });
+      }
+      return;
+    }
+    const cycBtn = e.target.closest("[data-cycle]");
+    if (cycBtn && cycBtn.getAttribute("data-cycle") && !e.target.closest("a")) {
+      const id = cycBtn.getAttribute("data-cycle");
+      const cnow = ctx();
+      const block = cnow && cnow.eff.blocks.find((b) => b.id === id);
+      if (block) openCycleEditor(block);
+      else openDiscipline({ base: id, title: id });
       return;
     }
     const disc = e.target.closest("[data-disc]");
@@ -1791,9 +2189,24 @@
     }
   });
 
-  if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js").catch(() => {});
-  }
+  $("#backup-input").addEventListener("change", async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    try {
+      await importBackupFile(file);
+    } catch (err) {
+      console.error(err);
+      toast(err.message || "Не удалось прочитать файл");
+    }
+  });
+
+  window.addEventListener("online", () => {
+    if (state.ready) render();
+  });
+  window.addEventListener("offline", () => {
+    if (state.ready) render();
+  });
 
   async function boot() {
     const [savedSched, savedSettings, savedUser] = await Promise.all([
@@ -1803,13 +2216,13 @@
     ]);
     if (savedSched && savedSched.groups) {
       state.schedule = savedSched;
+    } else if (window.SEED) {
+      state.schedule = JSON.parse(JSON.stringify(window.SEED));
+      state.schedule.savedAt = new Date().toISOString();
+      state.schedule.source = "bundled";
+      await persistSchedule();
     } else {
-      state.schedule = window.SEED ? JSON.parse(JSON.stringify(window.SEED)) : null;
-      if (state.schedule) {
-        state.schedule.savedAt = new Date().toISOString();
-        state.schedule.source = "bundled";
-        await persistSchedule();
-      }
+      state.schedule = { groups: [], days: [], yearLabel: "" };
     }
     state.settings = Object.assign(S.defaultSettings(), savedSettings || {});
     state.compare = Array.isArray(state.settings.compareIds) ? state.settings.compareIds.slice() : [];
@@ -1825,11 +2238,13 @@
     if (!state.user.times) state.user.times = { discipline: {} };
     if (!state.user.colors) state.user.colors = {};
     if (!state.user.titles) state.user.titles = {};
+    if (!state.user.cyclePatches) state.user.cyclePatches = {};
+    if (!state.user.extraCycles) state.user.extraCycles = {};
     if (!state.user.times.discipline) state.user.times.discipline = {};
     const t = new Date();
     const span = S.academicSpan(state.schedule);
     const calSpan = state.settings.calSpan || 3;
-    if (S.todayISO() < span.firstWork) {
+    if (span.firstWork && S.todayISO() < span.firstWork) {
       const d = S.parseISO(span.firstWork);
       state.cal = { y: d.getFullYear(), m: d.getMonth(), span: calSpan };
       state.viewDate = span.firstWork;
@@ -1843,6 +2258,13 @@
 
   boot().catch((err) => {
     console.error(err);
-    $("#app-content").innerHTML = `<div class="empty">Не удалось открыть приложение. Обновите страницу.</div>`;
+    const box = $("#app-content");
+    if (box) {
+      box.innerHTML = `<div class="empty">${
+        isOffline()
+          ? "Нет сети, и на телефоне ещё нет копии. Откройте один раз с интернетом."
+          : "Не удалось открыть приложение. Обновите страницу."
+      }</div>`;
+    }
   });
 })();

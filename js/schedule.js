@@ -19,6 +19,7 @@
     "ноябрь",
     "декабрь"
   ];
+  const MONTHS_SHORT = ["янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
   const MONTHS_GEN = [
     "января",
     "февраля",
@@ -73,6 +74,16 @@
     return dt.getDate() + " " + MONTHS_GEN[dt.getMonth()];
   }
 
+  function formatDM(iso) {
+    const dt = parseISO(iso);
+    return pad2(dt.getDate()) + "." + pad2(dt.getMonth() + 1);
+  }
+
+  function formatDayMon(iso) {
+    const dt = parseISO(iso);
+    return dt.getDate() + " " + MONTHS_SHORT[dt.getMonth()];
+  }
+
   function formatRange(a, b) {
     if (a === b) return formatShort(a);
     const da = parseISO(a);
@@ -80,7 +91,7 @@
     if (da.getMonth() === db.getMonth() && da.getFullYear() === db.getFullYear()) {
       return da.getDate() + "–" + db.getDate() + " " + MONTHS_GEN[da.getMonth()];
     }
-    return formatShort(a) + " — " + formatShort(b);
+    return formatDayMon(a) + " — " + formatDayMon(b);
   }
 
   function pad2(n) {
@@ -141,7 +152,7 @@
   function kindLabel(kind) {
     return (
       {
-        specialty: "Своя дисциплина",
+        specialty: "Профильная дисциплина",
         course: "Цикл",
         practice: "Практика",
         attestation: "Аттестация",
@@ -194,12 +205,12 @@
   }
 
   function getGroup(schedule, id) {
-    return (schedule.groups || []).find((g) => g.id === id) || null;
+    return ((schedule && schedule.groups) || []).find((g) => g.id === id) || null;
   }
 
   function specialities(schedule) {
     const map = new Map();
-    (schedule.groups || []).forEach((g) => {
+    ((schedule && schedule.groups) || []).forEach((g) => {
       if (!map.has(g.speciality)) map.set(g.speciality, []);
       map.get(g.speciality).push(g);
     });
@@ -209,70 +220,173 @@
   }
 
   function workingDates(schedule) {
-    return (schedule.days || []).filter((d) => d.kind === "day").map((d) => d.date);
+    return ((schedule && schedule.days) || []).filter((d) => d.kind === "day").map((d) => d.date);
   }
 
   function datesOf(schedule, block) {
+    const skip = new Set(block.skip || []);
     if (block.kind === "vacation" && block.start && block.end && block.start !== block.end) {
       const out = [];
       const d0 = parseISO(block.start);
       const d1 = parseISO(block.end);
-      for (let d = new Date(d0); d <= d1; d.setDate(d.getDate() + 1)) out.push(toISO(d));
+      for (let d = new Date(d0); d <= d1; d.setDate(d.getDate() + 1)) {
+        const iso = toISO(d);
+        if (!skip.has(iso)) out.push(iso);
+      }
       return out;
     }
-    return workingDates(schedule).filter((d) => d >= block.start && d <= block.end);
+    return workingDates(schedule).filter((d) => d >= block.start && d <= block.end && !skip.has(d));
   }
 
-  function expandGroup(schedule, group) {
-    const map = {};
+  function uniq(arr) {
+    return Array.from(new Set(arr.filter(Boolean)));
+  }
+
+  function resolvedCycles(schedule, group, overrides) {
+    const gid = group.id;
+    const ov = overrides || {};
+    const patches = (ov.cyclePatches && ov.cyclePatches[gid]) || {};
+    const extras = (ov.extraCycles && ov.extraCycles[gid]) || [];
+    const dayOv = (ov.days && ov.days[gid]) || {};
+    const work = workingDates(schedule);
+    const cycles = [];
+
+    function countDays(start, end, skip) {
+      const sk = new Set(skip || []);
+      return work.filter((d) => d >= start && d <= end && !sk.has(d)).length;
+    }
+
     (group.blocks || []).forEach((b) => {
-      datesOf(schedule, b).forEach((d) => {
-        map[d] = {
-          kind: b.kind,
-          title: b.title,
-          base: b.base,
-          color: b.color,
-          start: b.start,
-          end: b.end,
-          sharedHint: b.sharedHint || [],
-          source: "seed"
-        };
+      const p = patches[b.id] || {};
+      if (p.deleted) return;
+      const start = p.start || b.start;
+      const end = p.end || b.end;
+      const skip = uniq(
+        (p.skip || []).concat(
+          work.filter((d) => d >= start && d <= end && dayOv[d] && (dayOv[d].off || dayOv[d].split))
+        )
+      );
+      const title = p.title || b.title;
+      cycles.push({
+        id: b.id,
+        origin: "seed",
+        kind: p.kind || b.kind,
+        title,
+        base: P().baseTitle(title),
+        color: p.color != null ? p.color : b.color,
+        start,
+        end,
+        skip,
+        sharedHint: b.sharedHint || [],
+        dayCount: countDays(start, end, skip)
       });
     });
-    return map;
+
+    extras.forEach((b) => {
+      if (!b || b.deleted) return;
+      const skip = uniq(b.skip || []);
+      cycles.push({
+        id: b.id,
+        origin: "extra",
+        kind: b.kind || "course",
+        title: b.title || "Цикл",
+        base: P().baseTitle(b.title || "Цикл"),
+        color: b.color || null,
+        start: b.start,
+        end: b.end,
+        skip,
+        sharedHint: [],
+        dayCount: countDays(b.start, b.end, skip)
+      });
+    });
+
+    Object.keys(dayOv).forEach((d) => {
+      const o = dayOv[d];
+      if (!o || !o.split) return;
+      const title = o.title || "Цикл";
+      cycles.push({
+        id: "split:" + gid + ":" + d,
+        origin: "split",
+        kind: o.kind || "course",
+        title,
+        base: o.base || P().baseTitle(title),
+        color: o.color || null,
+        start: d,
+        end: d,
+        skip: [],
+        sharedHint: [],
+        dayCount: 1
+      });
+    });
+
+    cycles.sort((a, b) => (a.start || "").localeCompare(b.start || "") || (a.id || "").localeCompare(b.id || ""));
+    return cycles;
   }
 
-  function applyOverrides(dayMap, overrides, groupId) {
-    const days = (overrides && overrides.days && overrides.days[groupId]) || {};
-    Object.keys(days).forEach((d) => {
-      const o = days[d];
-      if (!o) return;
-      if (o.deleted) {
-        delete dayMap[d];
-        return;
-      }
-      dayMap[d] = Object.assign({}, dayMap[d] || {}, o, { source: "user" });
-      if (o.title) dayMap[d].base = P().baseTitle(o.title);
-    });
-    return dayMap;
+  function overlayDay(rec, o) {
+    if (!o || o.split || o.deleted) return rec;
+    const next = Object.assign({}, rec);
+    if (o.notes != null) next.notes = o.notes;
+    if (o.location) next.location = o.location;
+    if (o.locationUrl) next.locationUrl = o.locationUrl;
+    if (o.parts) next.parts = o.parts;
+    if (o.practice) next.practice = o.practice;
+    if (o.lecture) next.lecture = o.lecture;
+    if (o.off) next.off = true;
+    return next;
   }
 
   function effective(schedule, group, overrides) {
-    const map = applyOverrides(expandGroup(schedule, group), overrides, group.id);
-    const blocks = P().coalesceDayMap(schedule, group.speciality, map);
-    return { map, blocks };
+    const cycles = resolvedCycles(schedule, group, overrides);
+    const dayOv = (overrides && overrides.days && overrides.days[group.id]) || {};
+    const map = {};
+    cycles.forEach((b) => {
+      const skip = new Set(b.skip || []);
+      const span =
+        b.kind === "vacation"
+          ? datesOf(schedule, Object.assign({}, b, { skip: [] }))
+          : workingDates(schedule).filter((d) => d >= b.start && d <= b.end);
+      span.forEach((d) => {
+        const rec = overlayDay(
+          {
+            id: b.id,
+            origin: b.origin,
+            kind: b.kind,
+            title: b.title,
+            base: b.base,
+            color: b.color,
+            start: b.start,
+            end: b.end,
+            skip: b.skip,
+            sharedHint: b.sharedHint,
+            off: skip.has(d),
+            source: b.origin === "seed" ? "seed" : "user"
+          },
+          dayOv[d]
+        );
+        if (!map[d]) map[d] = [];
+        map[d].push(rec);
+      });
+    });
+    return { map, blocks: cycles };
+  }
+
+  function recsAt(eff, date) {
+    const v = eff.map[date];
+    if (!v) return [];
+    return Array.isArray(v) ? v : [v];
   }
 
   function recAt(eff, date) {
-    return eff.map[date] || null;
+    const recs = recsAt(eff, date);
+    return recs.find((r) => !r.off) || recs[0] || null;
   }
 
   function blockAt(eff, date) {
+    const rec = recAt(eff, date);
+    if (rec && rec.id) return (eff.blocks || []).find((b) => b.id === rec.id) || rec;
     return (
-      eff.blocks.find((b) => {
-        if (b.kind === "vacation") return date >= b.start && date <= b.end;
-        return date >= b.start && date <= b.end;
-      }) || null
+      (eff.blocks || []).find((b) => date >= b.start && date <= b.end && !(b.skip || []).includes(date)) || null
     );
   }
 
@@ -421,27 +535,52 @@
     return teachers[groupId + "::" + base] || teachers[base] || null;
   }
 
+  function locText(v) {
+    if (!v) return "";
+    if (typeof v === "object") return v.text || "";
+    return String(v);
+  }
+
+  function locUrl(v, rec) {
+    if (rec && rec.locationUrl) return rec.locationUrl;
+    if (v && typeof v === "object") return v.url || "";
+    return "";
+  }
+
   function locationFor(locations, rec, groupId) {
-    if (rec && rec.location) return rec.location;
+    if (rec && rec.location) return locText(rec.location);
     if (!rec || !locations) return "";
     const base = rec.base || P().baseTitle(rec.title);
     const loc = locations[groupId + "::" + base] || locations[base];
-    return loc ? loc.text || loc : "";
+    return locText(loc);
+  }
+
+  function locationUrlFor(locations, rec, groupId) {
+    if (rec && rec.locationUrl) return rec.locationUrl;
+    if (rec && rec.location && typeof rec.location === "object") return rec.location.url || "";
+    if (!rec || !locations) return "";
+    const base = rec.base || P().baseTitle(rec.title);
+    const loc = locations[groupId + "::" + base] || locations[base];
+    return locUrl(loc, rec);
   }
 
   function academicSpan(schedule) {
     const work = workingDates(schedule);
-    const vac = (schedule.days || []).find((d) => d.kind === "range");
+    const vac = ((schedule && schedule.days) || []).find((d) => d.kind === "range");
     return {
-      start: work[0],
-      end: vac ? vac.end : work[work.length - 1],
-      firstWork: work[0],
-      lastWork: work[work.length - 1]
+      start: work[0] || "",
+      end: vac ? vac.end : work[work.length - 1] || "",
+      firstWork: work[0] || "",
+      lastWork: work[work.length - 1] || ""
     };
   }
 
   function nextBlock(eff, date) {
-    return eff.blocks.find((b) => b.start > date) || null;
+    return (
+      (eff.blocks || [])
+        .filter((b) => b.start > date && b.kind !== "off")
+        .sort((a, b) => a.start.localeCompare(b.start))[0] || null
+    );
   }
 
   function defaultSettings() {
@@ -473,13 +612,23 @@
   }
 
   function emptyUser() {
-    return { days: {}, teachers: {}, locations: {}, times: { discipline: {} }, colors: {}, titles: {} };
+    return {
+      days: {},
+      teachers: {},
+      locations: {},
+      times: { discipline: {} },
+      colors: {},
+      titles: {},
+      cyclePatches: {},
+      extraCycles: {}
+    };
   }
 
   global.OrdinaturaSched = {
     WD,
     WD_SHORT,
     MONTHS,
+    MONTHS_SHORT,
     MONTHS_GEN,
     plural,
     parseISO,
@@ -488,6 +637,8 @@
     weekday,
     formatLong,
     formatShort,
+    formatDM,
+    formatDayMon,
     formatRange,
     isClock,
     clockFrom,
@@ -506,6 +657,8 @@
     workingDates,
     datesOf,
     effective,
+    recsAt,
+    resolvedCycles,
     recAt,
     blockAt,
     nearest,
@@ -518,6 +671,7 @@
     normalizeParts,
     teacherFor,
     locationFor,
+    locationUrlFor,
     academicSpan,
     nextBlock,
     defaultSettings,
