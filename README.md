@@ -18,7 +18,7 @@
 2. Import **`Levshin-ArtQ/ord_susmu`** (если репозитория нет в списке: Configure GitHub App → разрешите этот repo)
 3. **Framework Preset: Other**
 4. **Root Directory:** не меняйте (файлы лежат в корне репозитория)
-5. Build Command и Output Directory оставьте пустыми — их задаёт `vercel.json`
+5. Build / Output не трогайте: `vercel.json` копирует сайт в `public/` на сборке
 6. Deploy
 
 После деплоя: открыть `https://….vercel.app` в Safari → Поделиться → На экран «Домой».
