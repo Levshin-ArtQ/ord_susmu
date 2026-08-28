@@ -14,6 +14,7 @@
     cycleFilter: "all",
     cycleQuery: "",
     compare: [],
+    compareRange: { mode: "cycle", from: "", to: "" },
     ready: false
   };
 
@@ -415,6 +416,7 @@
           }
           if (mode === "compare") {
             if (!state.compare.includes(gid) && gid !== viewGroupId()) state.compare.push(gid);
+            await persistCompare();
             closeModal();
             openCompare();
             return;
@@ -762,65 +764,191 @@
     });
   }
 
+  function addDaysIso(iso, n) {
+    const d = S.parseISO(iso);
+    d.setDate(d.getDate() + n);
+    return S.toISO(d);
+  }
+
+  function mondayOf(iso) {
+    const dt = S.parseISO(iso);
+    dt.setDate(dt.getDate() - ((dt.getDay() + 6) % 7));
+    return S.toISO(dt);
+  }
+
+  async function persistCompare() {
+    state.settings.compareIds = state.compare.slice();
+    state.settings.compareMode = (state.compareRange && state.compareRange.mode) || "cycle";
+    state.settings.compareFrom = (state.compareRange && state.compareRange.from) || "";
+    state.settings.compareTo = (state.compareRange && state.compareRange.to) || "";
+    await persist();
+  }
+
+  function compareDates(c) {
+    const anchor = state.viewDate || S.todayISO();
+    const work = S.workingDates(state.schedule);
+    const range = state.compareRange || { mode: "cycle" };
+    let from;
+    let to;
+    if (range.mode === "week") {
+      from = mondayOf(anchor);
+      to = addDaysIso(from, 6);
+    } else if (range.mode === "2weeks") {
+      from = mondayOf(anchor);
+      to = addDaysIso(from, 13);
+    } else if (range.mode === "month") {
+      const dt = S.parseISO(anchor);
+      from = S.toISO(new Date(dt.getFullYear(), dt.getMonth(), 1));
+      to = S.toISO(new Date(dt.getFullYear(), dt.getMonth() + 1, 0));
+    } else if (range.mode === "custom" && range.from && range.to) {
+      from = range.from <= range.to ? range.from : range.to;
+      to = range.from <= range.to ? range.to : range.from;
+    } else {
+      const near = S.nearest(state.schedule, c.eff, anchor);
+      const block = S.blockAt(c.eff, anchor) || near.block;
+      if (block) {
+        from = block.start;
+        to = block.end;
+      } else {
+        from = mondayOf(anchor);
+        to = addDaysIso(from, 6);
+      }
+    }
+    return { from, to, dates: work.filter((d) => d >= from && d <= to) };
+  }
+
   function openCompare() {
     const c = ctx();
     if (!c) return;
-    const today = S.todayISO();
-    const near = S.nearest(state.schedule, c.eff, today);
-    const block = near.block;
-    const dates = block ? S.datesOf(state.schedule, block).slice(0, 14) : S.workingDates(state.schedule).slice(0, 10);
-    const ids = [c.id, ...state.compare.filter((g) => g !== c.id)].slice(0, 5);
-    const head = dates.map((d) => `<th>${S.parseISO(d).getDate()}.${S.parseISO(d).getMonth() + 1}</th>`).join("");
+    if (!state.compareRange) state.compareRange = { mode: "cycle", from: "", to: "" };
+    const mode = state.compareRange.mode || "cycle";
+    const span = compareDates(c);
+    const dates = span.dates;
+    const ids = [c.id, ...state.compare.filter((g) => g !== c.id)].slice(0, 6);
+    const compact = dates.length > 16 ? " compact" : "";
+    const head = dates
+      .map((d) => {
+        const dt = S.parseISO(d);
+        return `<th>${S.WD_SHORT[dt.getDay()]}<br>${dt.getDate()}.${dt.getMonth() + 1}</th>`;
+      })
+      .join("");
     const rows = ids
       .map((gid) => {
         const g = groupOf(gid);
+        if (!g) return "";
         const eff = S.effective(state.schedule, g, state.user);
         const cells = dates
           .map((d) => {
             const rec = S.recAt(eff, d);
-            if (!rec) return `<td></td>`;
+            if (!rec) return `<td class="empty"></td>`;
             const col = hex(recColor(rec, g.speciality));
             const ink = S.textOn(col.replace("#", ""));
-            const short = (rec.title || "").slice(0, 18);
-            return `<td style="background:${col};color:${ink}">${esc(short)}</td>`;
+            const short = S.shortName(recTitle(rec));
+            const hol = rec.kind === "off" || rec.kind === "attestation" || rec.kind === "vacation";
+            return `<td class="${hol ? "hol" : ""}" style="background:${col};color:${ink}" title="${esc(recTitle(rec))}">${esc(short)}</td>`;
           })
           .join("");
-        return `<tr><th class="g">${esc(g.id)}</th>${cells}</tr>`;
+        const mine = gid === c.id ? " me" : "";
+        return `<tr><th class="g${mine}">${esc(g.id)}</th>${cells}</tr>`;
       })
       .join("");
-    const peers = block ? S.peers(state.schedule, c.group, block, state.user) : [];
+
+    const shares = [];
+    ids.forEach((gid) => {
+      if (gid === c.id) return;
+      const g = groupOf(gid);
+      if (!g) return;
+      const eff = S.effective(state.schedule, g, state.user);
+      let n = 0;
+      const titles = [];
+      dates.forEach((d) => {
+        const a = S.recAt(c.eff, d);
+        const b = S.recAt(eff, d);
+        if (!a || !b) return;
+        const ba = P.baseTitle(a.base || a.title);
+        const bb = P.baseTitle(b.base || b.title);
+        if (ba && ba === bb && a.kind !== "off" && a.kind !== "vacation") {
+          n++;
+          const lab = S.shortName(a.title);
+          if (titles.indexOf(lab) < 0) titles.push(lab);
+        }
+      });
+      if (n) shares.push({ g, n, titles });
+    });
+    shares.sort((a, b) => b.n - a.n);
+
+    const modes = [
+      ["cycle", "Цикл"],
+      ["week", "Неделя"],
+      ["2weeks", "2 недели"],
+      ["month", "Месяц"],
+      ["custom", "Даты"]
+    ];
     const sheet = openSheet(`
       <h1>Сравнение групп</h1>
-      <p class="sub" style="margin-bottom:10px">${
-        block
-          ? "Период: " + esc(S.formatRange(block.start, block.end)) + " · " + esc(S.expandName(block.title))
-          : "Текущий отрезок расписания"
-      }</p>
-      <div class="compare-table"><table><thead><tr><th class="g">Гр.</th>${head}</tr></thead><tbody>${rows}</tbody></table></div>
+      <p class="sub" style="margin-bottom:8px">${esc(S.formatRange(span.from, span.to))} · ${dates.length} ${S.plural(dates.length, "день", "дня", "дней")}</p>
+      <div class="filters">${modes
+        .map(
+          ([k, l]) =>
+            `<button type="button" class="chip${mode === k ? " on" : ""}" data-cmp-mode="${k}">${l}</button>`
+        )
+        .join("")}</div>
+      <div class="cmp-custom"${mode === "custom" ? "" : " hidden"}>
+        <input type="date" id="cmp-from" value="${esc(state.compareRange.from || span.from)}" />
+        <span class="muted">—</span>
+        <input type="date" id="cmp-to" value="${esc(state.compareRange.to || span.to)}" />
+      </div>
+      <div class="compare-table${compact}"><table><thead><tr><th class="g">Гр.</th>${head}</tr></thead><tbody>${
+        dates.length ? rows : `<tr><td class="g" colspan="2">Нет учебных дней в этом окне</td></tr>`
+      }</tbody></table></div>
       <div class="btn-row">
         <button type="button" class="btn ghost" id="cmp-add">+ группу</button>
-        <button type="button" class="btn" id="cmp-clear">Очистить</button>
+        <button type="button" class="btn" id="cmp-clear">Убрать чужие</button>
       </div>
-      <h2 style="margin-top:16px">Кто делит этот период</h2>
+      <h2 style="margin-top:16px">Совпадения в этом периоде</h2>
       ${
-        peers.length
-          ? peers
+        shares.length
+          ? shares
               .map(
-                (p) => `<div class="peer">
-            <div><div class="gid">${esc(p.group.id)}</div><div class="sp">${esc(p.group.speciality)}</div></div>
-            <div class="small muted">${esc(S.formatRange(p.block.start, p.block.end))}</div>
+                (s) => `<div class="peer">
+            <div><div class="gid">${esc(s.g.id)}</div><div class="sp">${esc(s.g.speciality)}</div></div>
+            <div class="small muted">${s.n} ${S.plural(s.n, "день", "дня", "дней")}${
+                  s.titles.length ? " · " + esc(s.titles.join(", ")) : ""
+                }</div>
           </div>`
               )
               .join("")
-          : `<p class="muted small">Прямых совпадений по названию дисциплины нет. Добавьте группу вручную — так видно, кто учится рядом по датам.</p>`
+          : `<p class="muted small">В выбранном окне у добавленных групп нет тех же дисциплин в те же дни.</p>`
       }
     `);
+    $$("[data-cmp-mode]", sheet).forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        state.compareRange.mode = btn.getAttribute("data-cmp-mode");
+        await persistCompare();
+        closeModal();
+        openCompare();
+      });
+    });
+    const fromInp = $("#cmp-from", sheet);
+    const toInp = $("#cmp-to", sheet);
+    const applyCustom = async () => {
+      if (!fromInp || !toInp || !fromInp.value || !toInp.value) return;
+      state.compareRange.mode = "custom";
+      state.compareRange.from = fromInp.value;
+      state.compareRange.to = toInp.value;
+      await persistCompare();
+      closeModal();
+      openCompare();
+    };
+    if (fromInp) fromInp.addEventListener("change", applyCustom);
+    if (toInp) toInp.addEventListener("change", applyCustom);
     $("#cmp-add", sheet).addEventListener("click", () => {
       closeModal();
       renderGroupPicker({ mode: "compare" });
     });
-    $("#cmp-clear", sheet).addEventListener("click", () => {
+    $("#cmp-clear", sheet).addEventListener("click", async () => {
       state.compare = [];
+      await persistCompare();
       closeModal();
       openCompare();
     });
@@ -1684,6 +1812,12 @@
       }
     }
     state.settings = Object.assign(S.defaultSettings(), savedSettings || {});
+    state.compare = Array.isArray(state.settings.compareIds) ? state.settings.compareIds.slice() : [];
+    state.compareRange = {
+      mode: state.settings.compareMode || "cycle",
+      from: state.settings.compareFrom || "",
+      to: state.settings.compareTo || ""
+    };
     state.user = Object.assign(S.emptyUser(), savedUser || {});
     if (!state.user.days) state.user.days = {};
     if (!state.user.teachers) state.user.teachers = {};

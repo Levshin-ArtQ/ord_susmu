@@ -464,7 +464,11 @@
       defaultParts: ["practice", "lecture"],
       seenOnboarding: false,
       weekStartsMonday: true,
-      calSpan: 3
+      calSpan: 3,
+      compareIds: [],
+      compareMode: "cycle",
+      compareFrom: "",
+      compareTo: ""
     };
   }
 

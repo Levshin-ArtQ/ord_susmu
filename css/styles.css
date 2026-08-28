@@ -1003,6 +1003,38 @@ body.modal-open {
   left: 0;
   background: var(--bg);
 }
+.compare-table .g.me {
+  color: var(--accent-ink);
+}
+.compare-table.compact th,
+.compare-table.compact td {
+  min-width: 44px;
+  max-width: 72px;
+  font-size: 0.64rem;
+  padding: 5px 3px;
+}
+.compare-table td.hol {
+  opacity: 0.72;
+}
+.cmp-custom {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+.cmp-custom[hidden] {
+  display: none;
+}
+.cmp-custom input[type="date"] {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 8px;
+  background: #fff;
+}
 
 .setting-row {
   display: flex;
