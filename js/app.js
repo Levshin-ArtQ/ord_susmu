@@ -247,6 +247,38 @@
   async function persist() {
     await DB.set("settings", state.settings);
     await DB.set("user", state.user);
+    rememberThemePref();
+  }
+
+  function rememberThemePref() {
+    try {
+      localStorage.setItem("ordinatura:theme", state.settings.theme || "auto");
+    } catch (_) {}
+  }
+
+  function resolvedTheme() {
+    const pref = (state.settings && state.settings.theme) || "auto";
+    if (pref === "dark" || pref === "light") return pref;
+    return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  }
+
+  function applyTheme() {
+    const mode = resolvedTheme();
+    const root = document.documentElement;
+    root.setAttribute("data-theme", mode);
+    root.style.colorScheme = mode;
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute("content", mode === "dark" ? "#0c1410" : "#146B3A");
+    const apple = document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]');
+    if (apple) apple.setAttribute("content", mode === "dark" ? "black-translucent" : "default");
+    rememberThemePref();
+  }
+
+  async function setThemePref(pref) {
+    state.settings.theme = pref;
+    applyTheme();
+    await persist();
+    render();
   }
 
   async function persistSchedule() {
@@ -1688,6 +1720,23 @@
           <div><div class="t">Время по умолчанию</div><div class="s">практика ${esc(S.formatTimeSpan(state.settings.practiceStart, state.settings.practiceEnd))}<br>лекция ${esc(S.formatTimeSpan(state.settings.lectureStart, state.settings.lectureEnd))}</div></div>
           <button type="button" class="btn" data-act="times-global">Изменить</button>
         </div>
+        <div class="setting-row stack">
+          <div>
+            <div class="t">Оформление</div>
+            <div class="s">${
+              (state.settings.theme || "auto") === "auto"
+                ? "как на телефоне · сейчас " + (resolvedTheme() === "dark" ? "тёмное" : "светлое")
+                : state.settings.theme === "dark"
+                  ? "всегда тёмное"
+                  : "всегда светлое"
+            }</div>
+          </div>
+          <div class="seg theme-seg">
+            <button type="button" class="seg-btn${(state.settings.theme || "auto") === "auto" ? " on" : ""}" data-act="theme-auto">Авто</button>
+            <button type="button" class="seg-btn${state.settings.theme === "light" ? " on" : ""}" data-act="theme-light">Светлая</button>
+            <button type="button" class="seg-btn${state.settings.theme === "dark" ? " on" : ""}" data-act="theme-dark">Тёмная</button>
+          </div>
+        </div>
       </div>
       <div class="card">
         <h2>Преподаватели</h2>
@@ -1869,6 +1918,9 @@
   }
 
   async function onAction(act, el) {
+    if (act === "theme-auto") return setThemePref("auto");
+    if (act === "theme-light") return setThemePref("light");
+    if (act === "theme-dark") return setThemePref("dark");
     if (act === "set-group" || act === "pick-group") return renderGroupPicker({ mode: "set" });
     if (act === "peek") return renderGroupPicker({ mode: "peek" });
     if (act === "unpeek") {
@@ -2085,6 +2137,8 @@
       from: state.settings.compareFrom || "",
       to: state.settings.compareTo || ""
     };
+    if (!state.settings.theme) state.settings.theme = "auto";
+    applyTheme();
     await persist();
     toast("Копия восстановлена");
     render();
@@ -2207,6 +2261,17 @@
   window.addEventListener("offline", () => {
     if (state.ready) render();
   });
+  const themeMq = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+  const onThemeMq = () => {
+    if ((state.settings.theme || "auto") === "auto") {
+      applyTheme();
+      if (state.ready && state.view === "more") render();
+    }
+  };
+  if (themeMq) {
+    if (themeMq.addEventListener) themeMq.addEventListener("change", onThemeMq);
+    else if (themeMq.addListener) themeMq.addListener(onThemeMq);
+  }
 
   async function boot() {
     const [savedSched, savedSettings, savedUser] = await Promise.all([
@@ -2225,6 +2290,8 @@
       state.schedule = { groups: [], days: [], yearLabel: "" };
     }
     state.settings = Object.assign(S.defaultSettings(), savedSettings || {});
+    if (!state.settings.theme) state.settings.theme = "auto";
+    applyTheme();
     state.compare = Array.isArray(state.settings.compareIds) ? state.settings.compareIds.slice() : [];
     state.compareRange = {
       mode: state.settings.compareMode || "cycle",

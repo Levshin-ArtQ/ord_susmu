@@ -1,4 +1,4 @@
-const CACHE = "ordinatura-v1.9.0";
+const CACHE = "ordinatura-v1.10.0";
 const ASSETS = [
   "./",
   "./index.html",
@@ -89,6 +89,10 @@ function offlineShell() {
     main{padding:48px 24px;text-align:center;}
     h1{font-size:1.2rem;margin:0 0 8px;}
     p{color:#5b6f62;line-height:1.45;margin:0;}
+    @media (prefers-color-scheme: dark) {
+      html,body{background:#0c1410;color:#e7f0ea;}
+      p{color:#9aafa3;}
+    }
   </style>
 </head>
 <body>

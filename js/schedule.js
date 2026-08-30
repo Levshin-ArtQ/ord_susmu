@@ -602,6 +602,7 @@
       saturdayLectureEnd: "13:00",
       defaultParts: ["practice", "lecture"],
       seenOnboarding: false,
+      theme: "auto",
       weekStartsMonday: true,
       calSpan: 3,
       compareIds: [],

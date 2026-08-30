@@ -7,7 +7,7 @@
       content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1"
     />
     <meta name="theme-color" content="#146B3A" />
-    <meta name="color-scheme" content="light" />
+    <meta name="color-scheme" content="light dark" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="ЮУГМУ" />
@@ -17,14 +17,26 @@
     />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="format-detection" content="telephone=yes" />
+    <script>
+      (function () {
+        var pref = "auto";
+        try { pref = localStorage.getItem("ordinatura:theme") || "auto"; } catch (e) {}
+        var dark = pref === "dark" || (pref !== "light" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+        document.documentElement.style.colorScheme = dark ? "dark" : "light";
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute("content", dark ? "#0c1410" : "#146B3A");
+      })();
+    </script>
     <link rel="manifest" href="manifest.json" />
     <link rel="icon" href="icons/icon-192.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="icons/icon-512.svg" />
     <title>ЮУГМУ · Ординатура</title>
     <link rel="stylesheet" href="css/styles.css" />
     <style>
-      html, body { background: #f3f6f3; color: #14241a; margin: 0; }
-      #app-content .empty { padding: 48px 16px; text-align: center; color: #5b6f62; }
+      html, body { background: var(--bg, #f3f6f3); color: var(--text, #14241a); margin: 0; }
+      html[data-theme="dark"], html[data-theme="dark"] body { background: #0c1410; color: #e7f0ea; }
+      #app-content .empty { padding: 48px 16px; text-align: center; color: var(--muted, #5b6f62); }
     </style>
     <script>
       if ("serviceWorker" in navigator) {
