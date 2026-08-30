@@ -1004,6 +1004,12 @@ h2 {
   grid-template-columns: repeat(4, 1fr);
   height: var(--nav);
 }
+.bottom-nav-inner.n5 {
+  grid-template-columns: repeat(5, 1fr);
+}
+.nav-item[hidden] {
+  display: none;
+}
 .nav-item {
   appearance: none;
   border: 0;
@@ -1349,4 +1355,119 @@ a.plain {
 .teach-row .btn.danger {
   padding: 0 12px;
   flex-shrink: 0;
+}
+
+.sheet {
+  padding-bottom: calc(12px + var(--safe-b));
+}
+.sheet-foot {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  background: linear-gradient(180deg, transparent, var(--bg) 28%);
+  padding: 12px 0 4px;
+  margin-top: 8px;
+}
+.sheet-foot-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.sheet-live {
+  flex: 1;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--muted);
+}
+.sheet-foot-row .btn {
+  flex: 0 0 auto;
+  min-width: 120px;
+}
+.hw-box {
+  background: var(--meta-bg);
+  border-radius: 12px;
+  padding: 10px 12px;
+  margin-top: 10px;
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+.p-links {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+.p-links .plain {
+  font-size: 0.78rem;
+}
+.staff-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.staff-roles {
+  margin: 0;
+  flex: 1 1 100%;
+}
+.staff-roles .seg-btn {
+  padding: 6px 4px;
+  font-size: 0.72rem;
+}
+.cycle-rich {
+  align-items: flex-start;
+  display: flex;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--border);
+  background: var(--card);
+  border-radius: 14px;
+  padding: 12px;
+  margin-bottom: 8px;
+}
+.cycle-rich .cycle-hit {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  width: 100%;
+}
+.cycle-body {
+  flex: 1;
+  min-width: 0;
+}
+.cyc-line {
+  font-size: 0.82rem;
+  margin-top: 4px;
+}
+.cyc-person {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.84rem;
+  font-weight: 650;
+  margin-top: 6px;
+}
+.person-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+.msg-tog {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px 8px;
+  margin-bottom: 8px;
+}
+.msg-tog .check-row {
+  margin: 0;
+  font-size: 0.82rem;
 }

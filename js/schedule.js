@@ -621,7 +621,9 @@
       colors: {},
       titles: {},
       cyclePatches: {},
-      extraCycles: {}
+      extraCycles: {},
+      staff: {},
+      briefs: {}
     };
   }
 
