@@ -119,6 +119,22 @@ ok(!S.formatTimeSpan("2026-09-02", "2026-09-05").includes("2026:00"), "no year-a
 ok(S.kindLabel("specialty") === "Профильная дисциплина", "ru labels");
 ok(S.monthWeeks(2026, 8).length >= 5, "september weeks");
 
+(function dayNoteMerge() {
+  const days = {};
+  function patch(gid, iso, extra) {
+    if (!days[gid]) days[gid] = {};
+    days[gid][iso] = Object.assign({}, days[gid][iso] || {}, extra);
+  }
+  patch("141-1", "2026-09-01", { notes: "a" });
+  patch("141-1", "2026-09-02", { notes: "b" });
+  patch("102-3", "2026-09-01", { notes: "c" });
+  ok(days["141-1"]["2026-09-01"].notes === "a", "note stays on 1 sep group 141");
+  ok(days["141-1"]["2026-09-02"].notes === "b", "note stays on 2 sep");
+  ok(days["102-3"]["2026-09-01"].notes === "c", "same date other group is separate");
+  patch("141-1", "2026-09-01", { hw: "x" });
+  ok(days["141-1"]["2026-09-01"].notes === "a" && days["141-1"]["2026-09-01"].hw === "x", "later hw does not wipe note");
+})();
+
 if (errors.length) {
   console.error("FAIL\n" + errors.map((e) => " - " + e).join("\n"));
   process.exit(1);

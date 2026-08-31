@@ -307,6 +307,7 @@
   const _K = 7;
   let _hits = [];
   let _live = null;
+  let _subFlush = null;
 
   function _ok() {
     return !!(state.settings && +state.settings.q === _K);
@@ -342,11 +343,19 @@
   }
 
   function flushLive() {
-    if (!_live) return Promise.resolve();
-    clearTimeout(_live.timer);
-    const s = _live.save;
-    _live = null;
-    return s ? Promise.resolve(s(true)) : Promise.resolve();
+    const jobs = [];
+    if (_subFlush) {
+      const f = _subFlush;
+      _subFlush = null;
+      jobs.push(Promise.resolve().then(() => f()));
+    }
+    if (_live) {
+      clearTimeout(_live.timer);
+      const s = _live.save;
+      _live = null;
+      if (s) jobs.push(Promise.resolve().then(() => s(true)));
+    }
+    return jobs.length ? Promise.all(jobs) : Promise.resolve();
   }
 
   function setSheetFoot(html) {
@@ -391,43 +400,128 @@
   }
 
   function parsePersonBlob(raw) {
-    let rest = String(raw || "");
+    const src = String(raw || "");
     const out = { name: "", phone: "", email: "", telegram: "", vk: "", max: "", wa: "", notes: "" };
-    const eat = (re) => {
-      const m = rest.match(re);
-      if (!m) return null;
-      rest = rest.replace(m[0], "\n");
-      return m;
+    let rest = src;
+    const clip = (s) => String(s || "").replace(/^[/]+/, "").replace(/[.,;:)\]]+$/g, "");
+    const takeAll = (re, pick) => {
+      const found = [];
+      rest = rest.replace(re, (...args) => {
+        const v = pick(args);
+        if (v) found.push(v);
+        return "\n";
+      });
+      return found;
     };
-    const em = eat(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/);
-    if (em) out.email = em[0];
-    const ph = eat(/(?:\+?7|8)[\s\-(]*\d{3}[\s\-)]*\d{3}[\s\-]*\d{2}[\s\-]*\d{2}/);
-    if (ph) out.phone = normPhone(ph[0]);
-    const tg = eat(/(?:https?:\/\/)?(?:t\.me\/|telegram\.me\/)([A-Za-z0-9_]{4,})/i);
-    if (tg) out.telegram = "@" + tg[1];
-    else {
-      const at = eat(/(^|[\s,;])@([A-Za-z0-9_]{4,})/);
-      if (at) out.telegram = "@" + at[2];
+    const emails = takeAll(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, (a) => a[0]);
+    out.email = emails.join(", ");
+    const phones = [];
+    const seenTel = {};
+    const addTel = (chunk) => {
+      const d = String(chunk || "").replace(/\D/g, "");
+      if (d.length === 11 && (d[0] === "7" || d[0] === "8")) {
+        /* ok */
+      } else if (d.length === 10 && d[0] === "9") {
+        /* local mobile */
+      } else return;
+      const key = d.slice(-10);
+      if (seenTel[key]) return;
+      seenTel[key] = true;
+      phones.push(normPhone(d.length === 10 ? "7" + d : chunk));
+    };
+    takeAll(/(?:\+?7|8)[\s\-(]*\d{3}[\s\-)]*\d{3}[\s\-]*\d{2}[\s\-]*\d{2}/g, (a) => {
+      addTel(a[0]);
+      return "";
+    });
+    takeAll(/(?:\+7|8|7)\d{10}/g, (a) => {
+      addTel(a[0]);
+      return "";
+    });
+    takeAll(/(?:^|[^\d])(9\d{2}[\s\-]*\d{3}[\s\-]*\d{2}[\s\-]*\d{2})(?!\d)/g, (a) => {
+      addTel(a[1] || a[0]);
+      return " ";
+    });
+    out.phones = phones;
+    out.phone = phones[0] || "";
+    const tgs = takeAll(/(?:https?:\/\/)?(?:t\.me\/|telegram\.me\/)([^\s,;]+)/gi, (a) => "@" + clip(a[1]).replace(/^@/, ""));
+    const ats = takeAll(/(^|[\s,;])@([A-Za-z0-9_]{2,})/g, (a) => "@" + a[2]);
+    out.telegram = (tgs[0] || ats[0] || "").replace(/[.,;]+$/, "");
+    const vks = takeAll(/(?:https?:\/\/)?(?:www\.)?vk\.com\/([^\s,;]+)/gi, (a) => "https://vk.com/" + clip(a[1]));
+    out.vk = vks[0] || "";
+    const mxs = takeAll(/(?:https?:\/\/)?(?:max\.ru\/|max:\/\/)([^\s,;]+)/gi, (a) => "https://max.ru/" + clip(a[1]));
+    out.max = mxs[0] || "";
+    const was = takeAll(/(?:https?:\/\/)?(?:wa\.me\/|api\.whatsapp\.com\/send\?phone=)(\d{10,15})/gi, (a) => "https://wa.me/" + a[1]);
+    out.wa = was[0] || "";
+    let best = "";
+    const fioRe = /[А-ЯЁA-Z][а-яёa-zA-ZёЁ-]+(?:\s+[А-ЯЁA-Z][а-яёa-zA-ZёЁ-]+){1,3}/g;
+    let fm;
+    while ((fm = fioRe.exec(rest))) {
+      if (fm[0].length > best.length) best = fm[0];
     }
-    const vk = eat(/(?:https?:\/\/)?(?:www\.)?vk\.com\/([A-Za-z0-9_.]+)/i);
-    if (vk) out.vk = "https://vk.com/" + vk[1];
-    const mx = eat(/(?:https?:\/\/)?(?:max\.ru\/|max:\/\/)([A-Za-z0-9_./-]+)/i);
-    if (mx) out.max = "https://max.ru/" + mx[1].replace(/^\/+/, "");
-    const wa = eat(/(?:https?:\/\/)?(?:wa\.me\/|api\.whatsapp\.com\/send\?phone=)(\d{10,15})/i);
-    if (wa) out.wa = "https://wa.me/" + wa[1];
-    const lines = rest.split(/\n+/).map((x) => x.replace(/\s+/g, " ").trim()).filter(Boolean);
-    const fio = lines.find((ln) => /^[А-ЯЁA-Z][а-яёa-z-]+(?:\s+[А-ЯЁA-Z][а-яёa-z-]+){1,3}$/.test(ln));
-    if (fio) {
-      out.name = fio;
-      rest = rest.replace(fio, " ");
+    if (best) {
+      out.name = best.trim();
+      rest = rest.replace(best, "\n");
     }
     out.notes = rest.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
     return out;
   }
 
+  function phoneList(t) {
+    if (!t) return [];
+    const raw = [];
+    if (Array.isArray(t.phones)) raw.push.apply(raw, t.phones);
+    if (t.phone) String(t.phone).split(/[,;]+/).forEach((p) => raw.push(p));
+    const seen = {};
+    const out = [];
+    raw.forEach((p) => {
+      const n = normPhone(p);
+      const d = n.replace(/\D/g, "").slice(-10);
+      if (d.length === 10 && !seen[d]) {
+        seen[d] = true;
+        out.push(n);
+      }
+    });
+    return out;
+  }
+
+  function phoneFieldsHtml(phones) {
+    const list = phones && phones.length ? phones : [""];
+    return `<div id="t-phones">${list
+      .map(
+        (p, i) =>
+          `<div class="field"><label>${i ? "Ещё номер" : "Телефон"}</label>
+        <input class="t-phone-i" value="${esc(p)}" placeholder="+7 …" /></div>`
+      )
+      .join("")}</div>
+      <button type="button" class="btn wide" id="t-add-phone" style="margin-bottom:12px">＋ номер</button>`;
+  }
+
+  function syncPhoneFields(rootEl, phones) {
+    const box = $("#t-phones", rootEl);
+    if (!box) return;
+    const want = phones && phones.length ? phones.slice() : [""];
+    const inputs = $$(".t-phone-i", box);
+    if (inputs.length !== want.length) {
+      box.innerHTML = want
+        .map(
+          (p, i) =>
+            `<div class="field"><label>${i ? "Ещё номер" : "Телефон"}</label>
+        <input class="t-phone-i" value="${esc(p)}" placeholder="+7 …" /></div>`
+        )
+        .join("");
+      return;
+    }
+    inputs.forEach((el, i) => {
+      if (el.value !== want[i]) el.value = want[i];
+    });
+  }
+
   function personHref(kind, t) {
     if (!t) return "";
-    if (kind === "tel" && t.phone) return "tel:" + t.phone.replace(/[^\d+]/g, "");
+    if (kind === "tel") {
+      const p = phoneList(t)[0];
+      return p ? "tel:" + p.replace(/[^\d+]/g, "") : "";
+    }
     if (kind === "mail" && t.email) return "mailto:" + t.email;
     if (kind === "tg" && t.telegram) {
       if (/^https?:\/\//i.test(t.telegram)) return t.telegram;
@@ -439,24 +533,88 @@
     return "";
   }
 
+  function pIco(kind) {
+    const s = {
+      tel: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.7 3.8c.4-.4 1-.5 1.5-.3l2.2 1c.5.2.8.7.8 1.3v2.1c0 .4-.2.8-.6 1L9.3 9.7c.9 1.8 2.2 3.2 4 4.1l1.7-1.2c.3-.2.7-.3 1.1-.2h2.1c.6 0 1.1.3 1.3.8l1 2.2c.2.5.1 1.1-.3 1.5l-1.5 1.5c-.4.4-1 .6-1.6.5C10.8 18.3 5.7 13.2 5.2 6.9c-.1-.6.1-1.2.5-1.6z" fill="currentColor" stroke="none"/></svg>',
+      tg: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.1 5.2 3.9 11.3c-1.1.4-1.1 1 0 1.3l4.1 1.3 1.6 4.9c.2.7.4.9 1 .9.5 0 .7-.2 1-.6l2.3-2.8 4.4 3.3c.8.5 1.4.2 1.6-.8L21.4 6c.2-1-.4-1.5-1.3-.8zM9.6 13.7l7.6-4.7c.4-.2.7 0 .4.3l-6.2 5.6-.2 2.6z" fill="currentColor" stroke="none"/></svg>',
+      vk: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12.9 18c-5.2 0-8.2-3.6-8.3-9.6h2.6c.1 4.4 2 5.9 3.5 6.1V8.4h2.5v3.5c1.5-.2 3-1.8 3.5-3.5h2.5c-.4 2.3-2.1 3.9-3.3 4.4 1.2.4 3.1 1.8 3.7 4.8h-2.7c-.5-1.9-2-3.3-3.7-3.5V18z" fill="currentColor" stroke="none"/></svg>',
+      max: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7.5 9.2 16h2.1L16 7.5h-2.3l-3.4 6.5L7.2 7.5H5zm12.2 0v8.5h2.1V7.5h-2.1z" fill="currentColor" stroke="none"/></svg>',
+      wa: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.6C7.4 3.6 3.6 7.3 3.6 12c0 1.5.4 2.9 1.2 4.1L3.5 20.5l2.5-1.3A8.4 8.4 0 0 0 12 20.4c4.7 0 8.4-3.7 8.4-8.4S16.7 3.6 12 3.6zm4.7 11.9c-.2.5-1.1.9-1.5 1-.4 0-.8.1-2.6-.5-2.2-.8-3.6-2.8-3.7-3-.1-.1-.9-1.2-.9-2.3s.6-1.6.8-1.8c.2-.2.4-.2.5-.2h.4c.1 0 .3 0 .4.3l.6 1.5c.1.2 0 .3-.1.5l-.3.4c-.1.1-.2.3-.1.5.1.2.6 1 1.3 1.6.9.8 1.6 1 1.8 1.1.2.1.4.1.5-.1l.7-.8c.1-.1.3-.1.5-.1l1.6.8c.2.1.3.2.4.3 0 .4-.1 1-.3 1.2z" fill="currentColor" stroke="none"/></svg>',
+      mail: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 6.5h15v11h-15v-11zm7.5 6.2L6 8.2v1.3l6 4.3 6-4.3V8.2l-6 4.5z" fill="currentColor" stroke="none"/></svg>'
+    };
+    return s[kind] || "";
+  }
+
   function personChips(t) {
     if (!t) return "";
-    const bits = [
-      ["tel", "тел", personHref("tel", t)],
-      ["tg", "TG", personHref("tg", t)],
+    const bits = [];
+    phoneList(t).forEach((p) => {
+      bits.push(["tel", "Телефон " + p, "tel:" + p.replace(/[^\d+]/g, "")]);
+    });
+    const rest = [
+      ["tg", "Telegram", personHref("tg", t)],
       ["vk", "VK", personHref("vk", t)],
       ["max", "MAX", personHref("max", t)],
-      ["wa", "WA", personHref("wa", t)],
-      ["mail", "почта", personHref("mail", t)]
-    ].filter((x) => x[2]);
+      ["wa", "WhatsApp", personHref("wa", t)],
+      ["mail", "Почта", personHref("mail", t)]
+    ];
+    rest.forEach((x) => {
+      if (x[2]) bits.push(x);
+    });
     if (!bits.length) return "";
     return `<span class="p-links">${bits
-      .map(([k, lab, href]) => `<a class="plain" href="${esc(href)}" ${k === "tel" || k === "mail" ? "" : 'target="_blank" rel="noopener"'} >${lab}</a>`)
-      .join(" ")}</span>`;
+      .map(
+        ([k, lab, href]) =>
+          `<a class="p-ico p-ico-${k}" href="${esc(href)}" title="${esc(lab)}" aria-label="${esc(lab)}" ${
+            k === "tel" || k === "mail" ? "" : 'target="_blank" rel="noopener"'
+          }>${pIco(k)}</a>`
+      )
+      .join("")}</span>`;
   }
 
   function roleLab(role) {
     return role === "pr" ? "практика" : role === "lc" ? "лекция" : role === "sub" ? "замена" : "";
+  }
+
+  function cycleChoices() {
+    const c = ctx();
+    if (!c) return [];
+    return (c.eff.blocks || []).filter((b) => b.kind !== "off" && b.kind !== "vacation");
+  }
+
+  function teacherCycleIds(key) {
+    const c = ctx();
+    if (!c || !key || !state.user.staff || !state.user.staff[c.id]) return [];
+    const staff = state.user.staff[c.id];
+    return Object.keys(staff).filter((cid) => (staff[cid] || []).some((s) => s.key === key));
+  }
+
+  function applyTeacherCycles(key, selectedIds) {
+    const c = ctx();
+    if (!c || !key) return;
+    if (!state.user.staff) state.user.staff = {};
+    if (!state.user.staff[c.id]) state.user.staff[c.id] = {};
+    const staff = state.user.staff[c.id];
+    const want = {};
+    (selectedIds || []).forEach((id) => {
+      if (id) want[id] = true;
+    });
+    Object.keys(staff).forEach((cid) => {
+      const mine = (staff[cid] || []).find((s) => s.key === key);
+      staff[cid] = (staff[cid] || []).filter((s) => s.key !== key);
+      if (want[cid]) staff[cid].push(mine || { key: key, role: "all" });
+      if (!staff[cid].length) delete staff[cid];
+    });
+    Object.keys(want).forEach((cid) => {
+      if (!staff[cid]) staff[cid] = [];
+      if (!staff[cid].some((s) => s.key === key)) staff[cid].push({ key: key, role: "all" });
+    });
+  }
+
+  function readTeacherCycleIds(rootEl) {
+    return $$("#t-cycles .chip.on", rootEl)
+      .map((el) => el.getAttribute("data-cid"))
+      .filter(Boolean);
   }
 
   function staffOf(gid, block) {
@@ -480,9 +638,27 @@
     return { text: d.hw || "", bring: d.bring || "", at: d.at || "", extra: d.hx || "" };
   }
 
+  function saveHwBox(box) {
+    if (!box) return;
+    const iso = box.getAttribute("data-hw-iso");
+    const gid = viewGroupId();
+    if (!iso || !gid) return;
+    if (!state.user.days) state.user.days = {};
+    if (!state.user.days[gid]) state.user.days[gid] = {};
+    const rec = Object.assign({}, state.user.days[gid][iso] || {});
+    const hw = $("[data-hw-field='hw']", box);
+    const bring = $("[data-hw-field='bring']", box);
+    const at = $("[data-hw-field='at']", box);
+    rec.hw = hw ? hw.value.trim() || undefined : rec.hw;
+    rec.bring = bring ? bring.value.trim() || undefined : rec.bring;
+    rec.at = at ? at.value.trim() || undefined : rec.at;
+    state.user.days[gid][iso] = rec;
+    persist();
+  }
+
   function vcardOf(t) {
     const lines = ["BEGIN:VCARD", "VERSION:3.0", "FN:" + (t.name || "Преподаватель")];
-    if (t.phone) lines.push("TEL;TYPE=CELL:" + t.phone.replace(/\s/g, ""));
+    phoneList(t).forEach((p) => lines.push("TEL;TYPE=CELL:" + p.replace(/\s/g, "")));
     if (t.email) lines.push("EMAIL:" + t.email);
     ["telegram", "vk", "max", "wa"].forEach((k) => {
       const h = personHref(k === "telegram" ? "tg" : k, t);
@@ -661,10 +837,17 @@
   function dismissSheet() {
     const nest = $(".sheet-nest");
     const main = $(".sheet-main");
+    const foot = $(".sheet-foot");
     if (nest && !nest.hidden) {
+      if (_subFlush) {
+        const f = _subFlush;
+        _subFlush = null;
+        f();
+      }
       nest.hidden = true;
       nest.innerHTML = "";
       if (main) main.hidden = false;
+      if (foot && foot.innerHTML) foot.hidden = false;
       return;
     }
     closeModal();
@@ -676,12 +859,15 @@
     root.hidden = false;
     root.innerHTML = `<div class="sheet-backdrop"><div class="sheet" role="dialog" aria-modal="true">
       <div class="sheet-head"><div class="grab"></div><button type="button" class="sheet-x" data-close="1" aria-label="Закрыть">✕</button></div>
-      <div class="sheet-main">${html}</div>
+      <div class="sheet-scroll">
+        <div class="sheet-main">${html}</div>
+        <div class="sheet-nest" hidden></div>
+      </div>
       <div class="sheet-foot" hidden></div>
-      <div class="sheet-nest" hidden></div>
     </div></div>`;
     const backdrop = $(".sheet-backdrop", root);
     const sheet = $(".sheet", root);
+    const scroller = $(".sheet-scroll", root) || sheet;
     backdrop.addEventListener("click", (e) => {
       if (e.target === backdrop) dismissSheet();
     });
@@ -695,7 +881,7 @@
     let startY = 0;
     let dragging = false;
     const onStart = (y) => {
-      if (sheet.scrollTop > 2) return;
+      if (scroller.scrollTop > 2) return;
       startY = y;
       dragging = true;
     };
@@ -942,6 +1128,24 @@
     const lc = byKind.lecture || { start: "12:30", end: "15:00" };
     const sheet = openSheet(`
       <h1>${esc(S.formatLong(iso))}</h1>
+      ${
+        _ok()
+          ? `<div class="field"><label>Задание на ${esc(S.formatDM(iso))}</label>
+        <textarea id="ed-hw" placeholder="что сделать к занятию">${esc(ov.hw || "")}</textarea></div>
+        <div class="field-row">
+          <div class="field"><label>С собой</label>
+            <input id="ed-bring" value="${esc(ov.bring || "")}" placeholder="халат, тетрадь…" /></div>
+          <div class="field"><label>К времени</label>
+            <input id="ed-at" value="${esc(ov.at || "")}" placeholder="09:00" inputmode="numeric" /></div>
+        </div>
+        <div class="field"><label>Ещё в объявление</label>
+          <textarea id="ed-hx">${esc(ov.hx || "")}</textarea></div>
+        <button type="button" class="btn wide" id="ed-copy" style="margin-bottom:12px">Скопировать в чат</button>`
+          : ""
+      }
+      <div class="field"><label>Заметка к этому дню</label>
+        <textarea id="ed-notes">${esc(ov.notes || "")}</textarea>
+      </div>
       <div class="field"><label>Дисциплина</label>
         <input id="ed-title" value="${esc(recTitle(rec))}" />
       </div>
@@ -964,20 +1168,9 @@
       <div class="field"><label>Ссылка на карту</label>
         <input id="ed-loc-url" value="${esc(ov.locationUrl || (locObj && locObj.url) || "")}" placeholder="https://yandex.ru/maps/…" />
       </div>
-      <div class="field"><label>Заметка к этому дню</label>
-        <textarea id="ed-notes">${esc(ov.notes || rec.notes || "")}</textarea>
-      </div>
       ${
         _ok()
-          ? `<div class="field"><label>ДЗ</label>
-        <textarea id="ed-hw" placeholder="что сделать к занятию">${esc(ov.hw || "")}</textarea></div>
-        <div class="field"><label>С собой</label>
-        <input id="ed-bring" value="${esc(ov.bring || "")}" placeholder="халат, тетрадь, допуск…" /></div>
-        <div class="field"><label>К какому времени</label>
-        <input id="ed-at" value="${esc(ov.at || "")}" placeholder="09:00" inputmode="numeric" /></div>
-        <div class="field"><label>Ещё в объявление</label>
-        <textarea id="ed-hx">${esc(ov.hx || "")}</textarea></div>
-        <div class="field"><label>Сообщение в чат</label>
+          ? `<div class="field"><label>Что включить в сообщение</label>
         ${msgToggles("d", [
           ["head", "дата"],
           ["title", "цикл"],
@@ -988,8 +1181,7 @@
           ["hw", "ДЗ"],
           ["bring", "с собой"],
           ["extra", "ещё"]
-        ])}
-        <button type="button" class="btn wide" id="ed-copy">Скопировать сообщение</button></div>`
+        ])}</div>`
           : ""
       }
       <button type="button" class="btn ghost wide" id="ed-teacher">Преподаватель${teacher && teacher.name ? ": " + esc(teacher.name) : ""}</button>
@@ -997,52 +1189,61 @@
     `);
     bindPalette(sheet);
     bindParts(sheet);
-    setSheetFoot(`<div class="sheet-foot-row"><span class="sheet-live">сохраняется само</span><button type="button" class="btn primary" id="ed-done">Готово</button></div>`);
+    setSheetFoot(`<button type="button" class="btn primary wide" id="ed-done">Готово</button>`);
     const origBase = rec.base || P.baseTitle(rec.title || "");
+    const gid = c.id;
     const writeDay = async (silent) => {
-      if (!$("#ed-title", sheet)) return;
-      const title = $("#ed-title", sheet).value.trim();
+      const titleEl = $("#ed-title", sheet);
+      if (!titleEl) return;
+      const title = titleEl.value.trim();
       const kind = $("#ed-kind", sheet).value;
       const colorVal = ($("#ed-color", sheet).value || "").trim().replace("#", "").toUpperCase();
       const partsNow = readParts(sheet);
       const location = $("#ed-loc", sheet).value.trim();
       const locationUrl = ($("#ed-loc-url", sheet).value || "").trim();
-      const notes = $("#ed-notes", sheet).value.trim();
+      const notesEl = $("#ed-notes", sheet);
+      const notes = notesEl ? notesEl.value.trim() : "";
       const newBase = P.baseTitle(title || rec.title);
-      if (!state.user.days[c.id]) state.user.days[c.id] = {};
-      const recDay = {
-        parts: partsNow,
-        location: location || undefined,
-        locationUrl: locationUrl || undefined,
-        notes: notes || undefined
-      };
-      if (_ok()) {
-        recDay.hw = ($("#ed-hw", sheet) && $("#ed-hw", sheet).value.trim()) || undefined;
+      if (!state.user.days[gid]) state.user.days[gid] = {};
+      const recDay = Object.assign({}, state.user.days[gid][iso] || {});
+      recDay.parts = partsNow;
+      recDay.location = location || undefined;
+      recDay.locationUrl = locationUrl || undefined;
+      recDay.notes = notes || undefined;
+      const hwEl = $("#ed-hw", sheet);
+      if (hwEl) {
+        recDay.hw = hwEl.value.trim() || undefined;
         recDay.bring = ($("#ed-bring", sheet) && $("#ed-bring", sheet).value.trim()) || undefined;
         recDay.at = ($("#ed-at", sheet) && $("#ed-at", sheet).value.trim()) || undefined;
         recDay.hx = ($("#ed-hx", sheet) && $("#ed-hx", sheet).value.trim()) || undefined;
       }
       if (partsNow.indexOf("practice") >= 0) recDay.practice = readSlotTimes(sheet, "practice");
+      else delete recDay.practice;
       if (partsNow.indexOf("lecture") >= 0) recDay.lecture = readSlotTimes(sheet, "lecture");
+      else delete recDay.lecture;
       if (kind === "off") recDay.off = true;
-      else if (newBase !== origBase || (kind !== rec.kind && rec.kind !== "off")) {
-        recDay.split = true;
-        recDay.title = title || rec.title;
-        recDay.kind = kind;
-        recDay.base = newBase;
-        recDay.color = colorVal || rec.color;
+      else {
+        delete recDay.off;
+        if (newBase !== origBase || (kind !== rec.kind && rec.kind !== "off")) {
+          recDay.split = true;
+          recDay.title = title || rec.title;
+          recDay.kind = kind;
+          recDay.base = newBase;
+          recDay.color = colorVal || rec.color;
+        }
       }
-      state.user.days[c.id][iso] = recDay;
+      state.user.days[gid][iso] = recDay;
       if (location || locationUrl) {
         const prev = state.user.locations[origBase] || {};
         if (!prev.text && !prev.url) state.user.locations[origBase] = { text: location, url: locationUrl };
       }
       await persist();
       if (!silent) {
+        _live = null;
         closeModal();
         toast(kind === "off" ? "День без занятий" : recDay.split ? "День сохранён отдельно" : "День сохранён");
         render();
-      } else markLive(document, true);
+      }
     };
     const kick = armLive(writeDay);
     sheet.addEventListener("input", kick);
@@ -1083,12 +1284,12 @@
       ${
         _ok()
           ? `<div class="field"><label>Вставить всё сразу</label>
-        <textarea id="t-blob" placeholder="Иванова Анна Сергеевна\n+7 900 123-45-67\n@ivanova\nvk.com/id123\nanna@mail.ru"></textarea>
-        <p class="small muted">Разберём телефон, почту, TG, VK, MAX — поля ниже заполнятся сами.</p></div>`
+        <textarea id="t-blob" placeholder="Петров Пётр Иванович\n+7 900 123-45-67\n+7 901 000-00-00\n@petrov\nvk.com/petrov\nmail@mail.ru"></textarea>
+        <p class="small muted">Пишите или правьте текст — поля ниже обновляются сразу. Номеров может быть несколько.</p></div>`
           : ""
       }
       <div class="field"><label>ФИО</label><input id="t-name" value="${esc(t.name || "")}" /></div>
-      <div class="field"><label>Телефон</label><input id="t-phone" inputmode="tel" value="${esc(t.phone || "")}" placeholder="+7 …" /></div>
+      ${phoneFieldsHtml(phoneList(t))}
       <div class="field"><label>Telegram</label><input id="t-tg" value="${esc(t.telegram || "")}" placeholder="@username" /></div>
       ${
         _ok()
@@ -1100,11 +1301,24 @@
       <div class="field"><label>Почта</label><input id="t-email" value="${esc(t.email || "")}" /></div>
       <div class="field"><label>Заметки</label><textarea id="t-notes" placeholder="кафедра, часы консультаций, что взять с собой…">${esc(t.notes || "")}</textarea></div>
       ${
+        _ok() && cycleChoices().length
+          ? `<div class="field"><label>Цикл</label>
+        <p class="small muted">Необязательно. Нажмите, чтобы привязать к занятиям.</p>
+        <div id="t-cycles" class="cycle-pick">${cycleChoices()
+          .map((b) => {
+            const on = teacherCycleIds(base).indexOf(b.id) >= 0 ? " on" : "";
+            return `<button type="button" class="chip${on}" data-cid="${esc(b.id)}">${esc(S.shortName(recTitle(b)))}</button>`;
+          })
+          .join("")}</div></div>`
+          : ""
+      }
+      ${
         _ok()
           ? `<div class="btn-row">
-        <button type="button" class="btn" id="t-share">Карточка</button>
-        <button type="button" class="btn" id="t-vcf">vCard</button>
-      </div>`
+        <button type="button" class="btn" id="t-share">Текст</button>
+        <button type="button" class="btn" id="t-vcf">В телефон</button>
+      </div>
+      <p class="small muted">«В телефон» — файл, который открывается в контактах.</p>`
           : ""
       }
       <button type="button" class="btn danger wide" id="t-del" style="margin-top:8px">Удалить</button>
@@ -1113,25 +1327,50 @@
   }
 
   function readTeacherFields(rootEl) {
-    const prev = {};
     const cur = {};
     cur.name = ($("#t-name", rootEl) && $("#t-name", rootEl).value.trim()) || "";
-    cur.phone = ($("#t-phone", rootEl) && $("#t-phone", rootEl).value.trim()) || "";
+    cur.phones = $$(".t-phone-i", rootEl)
+      .map((el) => el.value.trim())
+      .filter(Boolean);
+    if (!cur.phones.length) {
+      const one = $("#t-phone", rootEl);
+      if (one && one.value.trim()) cur.phones = [one.value.trim()];
+    }
+    cur.phone = cur.phones[0] || "";
     cur.telegram = ($("#t-tg", rootEl) && $("#t-tg", rootEl).value.trim()) || "";
     cur.email = ($("#t-email", rootEl) && $("#t-email", rootEl).value.trim()) || "";
     cur.notes = ($("#t-notes", rootEl) && $("#t-notes", rootEl).value.trim()) || "";
     if ($("#t-vk", rootEl)) cur.vk = $("#t-vk", rootEl).value.trim();
     if ($("#t-max", rootEl)) cur.max = $("#t-max", rootEl).value.trim();
     if ($("#t-wa", rootEl)) cur.wa = $("#t-wa", rootEl).value.trim();
-    return Object.assign(prev, cur);
+    const blob = $("#t-blob", rootEl);
+    if (blob && blob.value.trim()) {
+      const p = parsePersonBlob(blob.value);
+      if (p.name) cur.name = p.name;
+      if (p.phones && p.phones.length) {
+        cur.phones = p.phones.slice();
+        cur.phone = cur.phones[0];
+      } else if (p.phone) {
+        cur.phone = p.phone;
+        cur.phones = [p.phone];
+      }
+      if (p.telegram) cur.telegram = p.telegram;
+      if (p.email) cur.email = p.email;
+      if (p.vk) cur.vk = p.vk;
+      if (p.max) cur.max = p.max;
+      if (p.wa) cur.wa = p.wa;
+      if (p.notes) cur.notes = p.notes;
+    }
+    return cur;
   }
 
   function bindTeacherForm(rootEl, rec, onDone, key) {
     const base = key || P.baseTitle((rec && rec.title) || rec.base || "");
     const writeT = async (silent) => {
-      if (!$("#t-name", rootEl)) return;
+      if (!$("#t-name", rootEl) && !$("#t-blob", rootEl)) return;
       if (!state.user.teachers) state.user.teachers = {};
       state.user.teachers[base] = Object.assign({}, state.user.teachers[base] || {}, readTeacherFields(rootEl));
+      if (_ok()) applyTeacherCycles(base, readTeacherCycleIds(rootEl));
       await persist();
       if (!silent) {
         toast("Контакты сохранены");
@@ -1141,46 +1380,76 @@
           closeModal();
           render();
         }
-      } else markLive(document, true);
+      }
     };
-    const applyBlob = (e) => {
-      if (!e.target || e.target.id !== "t-blob") return;
-      const parsed = parsePersonBlob(e.target.value);
+    const applyBlob = () => {
+      const blob = $("#t-blob", rootEl);
+      if (!blob) return;
+      const parsed = parsePersonBlob(blob.value);
       const fill = (id, val) => {
         const el = $("#" + id, rootEl);
-        if (el && val && !el.value.trim()) el.value = val;
+        if (!el) return;
+        const next = val || "";
+        if (el.value !== next) el.value = next;
       };
       fill("t-name", parsed.name);
-      fill("t-phone", parsed.phone);
+      syncPhoneFields(rootEl, parsed.phones && parsed.phones.length ? parsed.phones : parsed.phone ? [parsed.phone] : [""]);
       fill("t-tg", parsed.telegram);
       fill("t-email", parsed.email);
       fill("t-vk", parsed.vk);
       fill("t-max", parsed.max);
       fill("t-wa", parsed.wa);
-      const notes = $("#t-notes", rootEl);
-      if (notes && parsed.notes && !notes.value.trim()) notes.value = parsed.notes;
+      fill("t-notes", parsed.notes);
     };
+    const blobEl = $("#t-blob", rootEl);
+    if (blobEl) {
+      const onBlob = () => applyBlob();
+      blobEl.addEventListener("input", onBlob);
+      blobEl.addEventListener("keyup", onBlob);
+      blobEl.addEventListener("paste", () => setTimeout(onBlob, 0));
+    }
+    const addPhone = $("#t-add-phone", rootEl);
+    if (addPhone) {
+      addPhone.addEventListener("click", () => {
+        const box = $("#t-phones", rootEl);
+        if (!box) return;
+        const n = $$(".t-phone-i", box).length;
+        const wrap = document.createElement("div");
+        wrap.className = "field";
+        wrap.innerHTML = `<label>Ещё номер</label><input class="t-phone-i" value="" placeholder="+7 …" />`;
+        box.appendChild(wrap);
+        const inp = $("input", wrap);
+        if (inp) inp.focus();
+      });
+    }
+    const cycBox = $("#t-cycles", rootEl);
+    if (cycBox) {
+      cycBox.addEventListener("click", (e) => {
+        const chip = e.target.closest("[data-cid]");
+        if (!chip) return;
+        chip.classList.toggle("on");
+        writeT(true);
+      });
+    }
     if (onDone) {
-      rootEl.addEventListener("input", (e) => {
-        applyBlob(e);
+      _subFlush = () => writeT(true);
+      rootEl.addEventListener("input", () => {
         clearTimeout(rootEl._tm);
         rootEl._tm = setTimeout(() => writeT(true), 360);
       });
       rootEl.addEventListener("change", () => writeT(true));
     } else {
       const kick = armLive(writeT);
-      rootEl.addEventListener("input", (e) => {
-        applyBlob(e);
-        kick();
-      });
+      rootEl.addEventListener("input", kick);
       rootEl.addEventListener("change", kick);
-      setSheetFoot(`<div class="sheet-foot-row"><span class="sheet-live">сохраняется само</span><button type="button" class="btn primary" id="t-done">Готово</button></div>`);
+      setSheetFoot(`<button type="button" class="btn primary wide" id="t-done">Готово</button>`);
       const done = $("#t-done");
       if (done) done.addEventListener("click", () => writeT(false));
     }
     const back = $("#t-back", rootEl);
     if (back) {
       back.addEventListener("click", async () => {
+        _subFlush = null;
         await writeT(true);
         if (onDone) onDone();
       });
@@ -1189,8 +1458,10 @@
     if (del) {
       del.addEventListener("click", async () => {
         if (!confirm("Удалить эту карточку?")) return;
+        applyTeacherCycles(base, []);
         delete state.user.teachers[base];
         _live = null;
+        _subFlush = null;
         await persist();
         toast("Удалено");
         if (onDone) onDone();
@@ -1228,11 +1499,14 @@
       if (!sheet || !nest) return openTeacher(rec, false, key);
       if (main) main.hidden = true;
       nest.hidden = false;
+      const foot = $(".sheet-foot");
+      if (foot) foot.hidden = true;
       nest.innerHTML = teacherFormHtml(rec, true, key);
       bindTeacherForm(nest, rec, () => {
         nest.hidden = true;
         nest.innerHTML = "";
         if (main) main.hidden = false;
+        if (foot && foot.innerHTML) foot.hidden = false;
       }, key);
       return;
     }
@@ -1314,11 +1588,11 @@
         closeModal();
         toast("Время обновлено");
         render();
-      } else markLive(document, true);
+      }
     };
     const kickT = armLive(writeTimes);
     sheet.addEventListener("change", kickT);
-    setSheetFoot(`<div class="sheet-foot-row"><span class="sheet-live">сохраняется само</span><button type="button" class="btn primary" id="tm-done">Готово</button></div>`);
+    setSheetFoot(`<button type="button" class="btn primary wide" id="tm-done">Готово</button>`);
     $("#tm-done").addEventListener("click", () => writeTimes(false));
   }
 
@@ -1583,13 +1857,13 @@
         closeModal();
         toast("Цикл сохранён");
         render();
-      } else markLive(document, true);
+      }
     };
     const kick = armLive(writeCycle);
     sheet.addEventListener("input", kick);
     sheet.addEventListener("change", kick);
     skipBox.addEventListener("click", kick);
-    setSheetFoot(`<div class="sheet-foot-row"><span class="sheet-live">сохраняется само</span><button type="button" class="btn primary" id="cy-done">Готово</button></div>`);
+    setSheetFoot(`<button type="button" class="btn primary wide" id="cy-done">Готово</button>`);
     const cyDone = $("#cy-done");
     if (cyDone) cyDone.addEventListener("click", () => writeCycle(false));
     const cyCopy = $("#cy-copy", sheet);
@@ -1660,11 +1934,11 @@
         closeModal();
         toast("Место сохранено");
         render();
-      } else markLive(document, true);
+      }
     };
     const kickL = armLive(writeLoc);
     sheet.addEventListener("input", kickL);
-    setSheetFoot(`<div class="sheet-foot-row"><span class="sheet-live">сохраняется само</span><button type="button" class="btn primary" id="l-done">Готово</button></div>`);
+    setSheetFoot(`<button type="button" class="btn primary wide" id="l-done">Готово</button>`);
     $("#l-done").addEventListener("click", () => writeLoc(false));
   }
 
@@ -1949,23 +2223,36 @@
         </div>
         ${first ? cycleCard(c, first, span.firstWork, { preview: true }) : ""}`;
     } else {
-      const recs = S.recsAt(c.eff, viewDate).filter((r) => !r.off);
-      const all = S.recsAt(c.eff, viewDate);
+      const recs = S.recsAt(c.eff, viewDate).filter((r) => !r.off && r.kind !== "vacation");
       if (!recs.length) {
-        body = `
-          <div class="card">
-            <div class="hero-date">${esc(S.formatLong(viewDate))}</div>
-            <p class="sub">${weekdaySunday(viewDate) ? "Воскресенье, выходной." : "Занятий нет."}</p>
-          </div>`;
+        const sun = weekdaySunday(viewDate);
+        const vac = S.recsAt(c.eff, viewDate).some((r) => r.kind === "vacation");
+        const offTitle = sun ? "Выходной" : vac ? "Каникулы" : "Занятий нет";
         const nxt = S.nextBlock(c.eff, viewDate);
-        if (nxt) body += cycleCard(c, nxt, nxt.start, { nextLabel: "Ближайший цикл" });
+        body = `
+          <div class="off-hero">
+            <div class="off-k">${offTitle}</div>
+            <div class="off-date">${esc(S.formatLong(viewDate))}</div>
+            <p>На учёбу не надо</p>
+            <button type="button" class="btn" data-day="${esc(viewDate)}">Заметка на этот день</button>
+          </div>`;
+        if (nxt) {
+          const when = S.formatShort(nxt.start);
+          body += `<div class="next-quiet">
+            <div class="k">Ближайшая учёба · не сегодня</div>
+            <div class="name">${esc(recTitle(nxt))}</div>
+            <div class="s">${esc(when)}${nxt.dayCount ? " · " + nxt.dayCount + " " + S.plural(nxt.dayCount, "день", "дня", "дней") : ""}</div>
+            <button type="button" class="btn" data-jump="${esc(nxt.start)}" style="margin-top:8px">Открыть этот день</button>
+          </div>`;
+        }
       } else {
         body = recs
           .map((r, i) => {
             const block = (r.id && c.eff.blocks.find((b) => b.id === r.id)) || S.blockAt(c.eff, viewDate);
             return cycleCard(c, block, viewDate, {
               nextLabel: i === 0 && recs.length > 1 ? "В этот день" : "",
-              hideNext: i < recs.length - 1
+              hideNext: i < recs.length - 1,
+              liveHw: i === 0
             });
           })
           .join("");
@@ -2107,16 +2394,20 @@
           }
         </div>
         ${
-          _ok()
+          _ok() && opts.liveHw
             ? (() => {
                 const hw = dayHw(c.id, iso);
-                const bits = [];
-                if (hw.text) bits.push("<div><b>ДЗ.</b> " + esc(hw.text) + "</div>");
-                if (hw.bring) bits.push("<div><b>С собой" + (hw.at ? " к " + esc(hw.at) : "") + ".</b> " + esc(hw.bring) + "</div>");
-                if (hw.extra) bits.push("<div>" + esc(hw.extra) + "</div>");
-                return bits.length
-                  ? `<div class="hw-box">${bits.join("")}<button type="button" class="btn wide" data-act="copy-day" data-iso="${esc(iso)}" style="margin-top:8px">Сообщение в чат</button></div>`
-                  : `<button type="button" class="btn wide" data-act="copy-day" data-iso="${esc(iso)}" style="margin-top:8px">Сообщение в чат</button>`;
+                return `<div class="hw-box" data-hw-iso="${esc(iso)}">
+            <label>ДЗ на этот день</label>
+            <textarea data-hw-field="hw" data-hw-iso="${esc(iso)}" placeholder="что сделать к занятию">${esc(hw.text)}</textarea>
+            <div class="field-row">
+              <div class="field" style="margin-bottom:0"><label>С собой</label>
+                <input data-hw-field="bring" data-hw-iso="${esc(iso)}" value="${esc(hw.bring)}" placeholder="халат, тетрадь…" /></div>
+              <div class="field" style="margin-bottom:0"><label>К времени</label>
+                <input data-hw-field="at" data-hw-iso="${esc(iso)}" value="${esc(hw.at)}" placeholder="09:00" /></div>
+            </div>
+            <button type="button" class="btn wide" data-act="copy-day" data-iso="${esc(iso)}" style="margin-top:10px">Сообщение в чат</button>
+          </div>`;
               })()
             : ""
         }
@@ -2359,6 +2650,7 @@
   }
 
   function renderBook() {
+    const cyc = ctx();
     const people = state.user.teachers || {};
     const keys = Object.keys(people).filter((k) => {
       const t = people[k];
@@ -2373,10 +2665,10 @@
         <button type="button" class="btn" data-act="export-book">Все карточки</button>
       </div>
       <div class="btn-row">
-        <button type="button" class="btn" data-act="export-vcf">Книга vCard</button>
+        <button type="button" class="btn" data-act="export-vcf">Все в телефон</button>
         ${picker ? `<button type="button" class="btn" data-act="pick-native">С телефона</button>` : ""}
       </div>
-      <p class="small muted">Карточку можно отправить вне приложения — откроется в контактах телефона.</p>
+      <p class="small muted">«В телефон» открывает карточку в контактах телефона. «Текст» — чтобы вставить в чат.</p>
       ${
         keys.length
           ? keys
@@ -2385,12 +2677,23 @@
                 return `<div class="person-card">
                   <button type="button" class="list-btn" data-teach="${esc(k)}" style="margin:0">
                     <div class="t">${esc(t.name || S.expandName(k))}</div>
-                    <div class="s">${[t.phone, t.telegram, t.email].filter(Boolean).map(esc).join(" · ") || "нет контактов"}</div>
+                    <div class="s">${phoneList(t)[0] ? esc(phoneList(t)[0]) : t.telegram || t.email || "нет номера"}</div>
+                    ${
+                      teacherCycleIds(k).length
+                        ? `<div class="s">${teacherCycleIds(k)
+                            .map((id) => {
+                              const b = cyc && cyc.eff.blocks.find((x) => x.id === id);
+                              return b ? esc(S.shortName(recTitle(b))) : "";
+                            })
+                            .filter(Boolean)
+                            .join(" · ")}</div>`
+                        : ""
+                    }
                   </button>
                   ${personChips(t)}
                   <div class="btn-row">
                     <button type="button" class="btn" data-share-one="${esc(k)}">Отправить</button>
-                    <button type="button" class="btn" data-vcf-one="${esc(k)}">vCard</button>
+                    <button type="button" class="btn" data-vcf-one="${esc(k)}">В телефон</button>
                     <button type="button" class="btn danger" data-del-teach="${esc(k)}">✕</button>
                   </div>
                 </div>`;
@@ -2447,6 +2750,10 @@
             <button type="button" class="seg-btn${+state.settings.ts !== 1 ? " on" : ""}" data-act="ts-5">5 мин</button>
             <button type="button" class="seg-btn${+state.settings.ts === 1 ? " on" : ""}" data-act="ts-1">1 мин</button>
           </div>
+        </div>
+        <div class="setting-row">
+          <div><div class="t">Расширенный режим</div><div class="s">ДЗ, контакты, сообщения в чат</div></div>
+          <button type="button" class="btn" data-act="qx">Выключить</button>
         </div>`
             : ""
         }
@@ -2552,6 +2859,14 @@
 
   function bindView() {
     const root = $("#app-content");
+    $$(".hw-box", root).forEach((box) => {
+      const kick = () => {
+        clearTimeout(box._hw);
+        box._hw = setTimeout(() => saveHwBox(box), 280);
+      };
+      box.addEventListener("input", kick);
+      box.addEventListener("change", () => saveHwBox(box));
+    });
     const cyc = $("#cyc-q", root);
     if (cyc) {
       cyc.addEventListener("input", () => {
@@ -2641,6 +2956,13 @@
   }
 
   async function onAction(act, el) {
+    if (act === "qx") {
+      state.settings.q = 0;
+      if (state.view === "book") state.view = "more";
+      await persist();
+      toast("Скрыто");
+      return render();
+    }
     if (act === "ts-5") {
       state.settings.ts = 5;
       await persist();
@@ -2662,7 +2984,7 @@
       const text = Object.keys(people)
         .map((k) => people[k])
         .filter((t) => t && (t.name || t.phone))
-        .map((t) => [t.name, t.phone, t.telegram, t.vk, t.max, t.email, t.notes].filter(Boolean).join("\n"))
+        .map((t) => [t.name].concat(phoneList(t), [t.telegram, t.vk, t.max, t.email, t.notes]).filter(Boolean).join("\n"))
         .join("\n\n——\n\n");
       return shareOrDownload("prepodavateli.txt", text || "пусто", "text/plain");
     }
@@ -2680,6 +3002,8 @@
       const c = ctx();
       const iso = (el && el.getAttribute("data-iso")) || state.viewDate || S.todayISO();
       if (!c) return;
+      const box = el && el.closest(".hw-box");
+      if (box) saveHwBox(box);
       const rec = S.recAt(c.eff, iso);
       return copyText(buildDayMsg(c, iso, rec, {}));
     }
@@ -2958,6 +3282,7 @@
     if (delTeach) {
       const key = delTeach.getAttribute("data-del-teach");
       if (confirm("Удалить этого преподавателя?")) {
+        applyTeacherCycles(key, []);
         delete state.user.teachers[key];
         persist().then(() => {
           toast("Преподаватель удалён");
@@ -3002,7 +3327,7 @@
     const shareOne = e.target.closest("[data-share-one]");
     if (shareOne) {
       const t = (state.user.teachers || {})[shareOne.getAttribute("data-share-one")] || {};
-      shareOrDownload((t.name || "kontakt") + ".txt", [t.name, t.phone, t.telegram, t.vk, t.max, t.email, t.notes].filter(Boolean).join("\n"), "text/plain");
+      shareOrDownload((t.name || "kontakt") + ".txt", [t.name].concat(phoneList(t), [t.telegram, t.vk, t.max, t.email, t.notes]).filter(Boolean).join("\n"), "text/plain");
       return;
     }
     const vcfOne = e.target.closest("[data-vcf-one]");
@@ -3043,6 +3368,10 @@
     }
   });
 
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) flushLive();
+  });
+  window.addEventListener("pagehide", () => flushLive());
   window.addEventListener("online", () => {
     if (state.ready) render();
   });
